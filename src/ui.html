@@ -1,0 +1,589 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="resizer-token" content="__RESIZER_TOKEN__">
+<title>Resizer — kamiru.art</title>
+<style>
+  :root {
+    --bg: #ffffff;
+    --ink: #000000;
+    --grey: #767676;
+    --line: #e6e6e6;
+    --panel: #fafafa;
+    --ok: #2e7d32;
+    --err: #b3261e;
+    --accent: #000000;
+    --accent-ink: #ffffff;
+    --font-main: 'Helvetica Neue', 'HelveticaNeue', Helvetica, 'Inter', Arial, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #101010; --ink: #f2f2f2; --grey: #9a9a9a; --line: #2a2a2a;
+      --panel: #171717; --ok: #66bb6a; --err: #ef6e64;
+      --accent: #f2f2f2; --accent-ink: #101010;
+    }
+  }
+  :root[data-theme="light"] {
+    --bg: #ffffff; --ink: #000000; --grey: #767676; --line: #e6e6e6;
+    --panel: #fafafa; --ok: #2e7d32; --err: #b3261e;
+    --accent: #000000; --accent-ink: #ffffff;
+  }
+  :root[data-theme="dark"] {
+    --bg: #101010; --ink: #f2f2f2; --grey: #9a9a9a; --line: #2a2a2a;
+    --panel: #171717; --ok: #66bb6a; --err: #ef6e64;
+    --accent: #f2f2f2; --accent-ink: #101010;
+  }
+
+  * { box-sizing: border-box; margin: 0; }
+  html, body { height: 100%; }
+  body {
+    background: var(--bg); color: var(--ink);
+    font-family: var(--font-main);
+    font-size: 14px; line-height: 1.45; letter-spacing: -0.01em;
+  }
+  button { font: inherit; color: inherit; background: none; border: none; cursor: pointer; }
+  input, select { font: inherit; color: var(--ink); background: var(--bg); }
+
+  .label {
+    font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em;
+    color: var(--grey);
+  }
+  .num { font-variant-numeric: tabular-nums; }
+
+  header {
+    display: flex; align-items: baseline; justify-content: space-between;
+    padding: 20px 28px 16px; border-bottom: 1px solid var(--ink);
+  }
+  .wordmark { font-size: 18px; font-weight: 600; letter-spacing: -0.025em; }
+  .wordmark span { color: var(--grey); font-weight: 400; }
+  #ffstatus { font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--grey); }
+  #ffstatus.bad { color: var(--err); }
+
+  main {
+    display: grid; grid-template-columns: minmax(0, 1fr) 340px;
+    gap: 0; min-height: calc(100vh - 60px);
+  }
+  @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+
+  /* ---------- left: drop zone + queue ---------- */
+  .left { padding: 24px 28px; display: flex; flex-direction: column; gap: 20px; }
+
+  #drop {
+    border: 1px dashed var(--grey); padding: 36px 24px; text-align: center;
+    color: var(--grey); cursor: pointer; transition: border-color .15s, color .15s;
+  }
+  #drop.over { border-color: var(--ink); color: var(--ink); }
+  #drop strong { color: var(--ink); font-weight: 500; }
+
+  .folder-row { display: flex; gap: 8px; }
+  .folder-row input[type="text"] {
+    flex: 1; border: 1px solid var(--line); padding: 8px 10px; min-width: 0;
+  }
+  .check { display: inline-flex; gap: 6px; align-items: center; color: var(--grey); white-space: nowrap; }
+
+  #queue { display: flex; flex-direction: column; }
+  .row {
+    display: grid;
+    grid-template-columns: minmax(0,1fr) 90px 110px 130px 84px;
+    gap: 12px; align-items: center;
+    padding: 10px 0; border-bottom: 1px solid var(--line);
+  }
+  .row .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .row .meta { color: var(--grey); font-size: 12px; }
+  .chip {
+    justify-self: start; font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em;
+    padding: 2px 8px; border: 1px solid var(--line); color: var(--grey);
+  }
+  .chip.done { color: var(--ok); border-color: var(--ok); }
+  .chip.error { color: var(--err); border-color: var(--err); }
+  .chip.working { color: var(--ink); border-color: var(--ink); }
+  .bar { height: 2px; background: var(--line); position: relative; }
+  .bar i { position: absolute; inset: 0 auto 0 0; width: 0; background: var(--ink); display: block; }
+  .delta.good { color: var(--ok); }
+  .rowbtn { text-decoration: underline; text-underline-offset: 3px; color: var(--grey); }
+  .rowbtn:hover { color: var(--ink); }
+  .errline { grid-column: 1 / -1; color: var(--err); font-size: 12px; }
+
+  .actions { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  .btn {
+    border: 1px solid var(--ink); padding: 10px 18px;
+    text-transform: uppercase; font-size: 12px; letter-spacing: 0.06em;
+  }
+  .btn.primary { background: var(--accent); color: var(--accent-ink); }
+  .btn:disabled { opacity: .35; cursor: default; }
+  #summary { color: var(--grey); }
+
+  /* ---------- right: controls ---------- */
+  .panel {
+    border-left: 1px solid var(--line); background: var(--panel);
+    padding: 24px 24px 40px; display: flex; flex-direction: column; gap: 22px;
+  }
+  @media (max-width: 900px) { .panel { border-left: none; border-top: 1px solid var(--line); } }
+  .group { display: flex; flex-direction: column; gap: 10px; }
+  .ratios { display: flex; gap: 10px; align-items: flex-end; }
+  .ratio {
+    display: flex; flex-direction: column; align-items: center; gap: 6px; color: var(--grey);
+  }
+  .ratio i {
+    display: block; border: 1px solid var(--grey); background: var(--bg);
+  }
+  .ratio[data-r="hover45"] i     { width: 32px; height: 40px; }
+  .ratio[data-r="square"] i      { width: 36px; height: 36px; }
+  .ratio[data-r="landscape169"] i{ width: 48px; height: 27px; }
+  .ratio[data-r="original"] i    { width: 40px; height: 32px; border-style: dashed; }
+  .ratio.on { color: var(--ink); }
+  .ratio.on i { border-color: var(--ink); border-width: 2px; }
+  .ratio small { font-size: 11px; letter-spacing: 0.02em; }
+
+  .field { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+  .field input[type="number"] {
+    width: 84px; border: 1px solid var(--line); padding: 6px 8px; text-align: right;
+  }
+  .field select { border: 1px solid var(--line); padding: 6px 8px; }
+  .field input[type="range"] { flex: 1; accent-color: var(--ink); }
+  .switch { display: flex; align-items: center; justify-content: space-between; }
+  .switch input { accent-color: var(--ink); width: 16px; height: 16px; }
+  .hint { font-size: 12px; color: var(--grey); }
+  .outdir { display: flex; gap: 8px; }
+  .outdir input { flex: 1; border: 1px solid var(--line); padding: 6px 8px; min-width: 0; font-size: 12px; }
+  .linkbtn { text-decoration: underline; text-underline-offset: 3px; }
+
+  /* ---------- preview modal ---------- */
+  #modal {
+    position: fixed; inset: 0; background: color-mix(in srgb, var(--bg) 88%, transparent);
+    display: none; align-items: center; justify-content: center; padding: 24px;
+  }
+  #modal.open { display: flex; }
+  .modal-card {
+    background: var(--bg); border: 1px solid var(--ink); max-width: 900px; width: 100%;
+    padding: 20px; display: flex; flex-direction: column; gap: 14px;
+    max-height: 92vh; overflow: auto;
+  }
+  .compare { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  @media (max-width: 700px) { .compare { grid-template-columns: 1fr; } }
+  .compare figure { display: flex; flex-direction: column; gap: 6px; }
+  .compare video, .compare img {
+    width: 100%; max-height: 55vh; object-fit: contain; background: var(--panel);
+    border: 1px solid var(--line);
+  }
+  .modal-head { display: flex; justify-content: space-between; align-items: baseline; }
+
+  #toast {
+    position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%);
+    background: var(--ink); color: var(--bg); padding: 10px 16px; font-size: 13px;
+    display: none; max-width: 90vw;
+  }
+  @media (prefers-reduced-motion: no-preference) {
+    .bar i { transition: width .3s linear; }
+  }
+  :focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+</style>
+</head>
+<body>
+<header>
+  <div class="wordmark">RESIZER <span>— medios para kamiru.art</span></div>
+  <div id="ffstatus">comprobando ffmpeg…</div>
+</header>
+
+<main>
+  <section class="left">
+    <div id="drop" role="button" tabindex="0" aria-label="Agregar archivos">
+      <strong>Arrastra aquí tus videos o fotos</strong><br>
+      o haz clic para elegirlos · también puedes soltar una carpeta entera
+      <input id="picker" type="file" multiple hidden>
+    </div>
+
+    <div class="group">
+      <span class="label">Carpeta completa (sin subir nada: se procesa donde está)</span>
+      <div class="folder-row">
+        <input id="folderpath" type="text" placeholder="Pega la ruta de la carpeta, ej. C:\Users\kami\Videos\hover">
+        <label class="check"><input id="recursive" type="checkbox"> incluir subcarpetas</label>
+        <button class="btn" id="addfolder">Agregar</button>
+      </div>
+    </div>
+
+    <div id="queue" aria-live="polite"></div>
+
+    <div class="actions">
+      <button class="btn primary" id="convert">Convertir todo</button>
+      <button class="btn" id="clear">Vaciar lista</button>
+      <span id="summary" class="num"></span>
+    </div>
+  </section>
+
+  <aside class="panel">
+    <div class="group">
+      <span class="label">Formato del sitio</span>
+      <div class="ratios" id="ratios">
+        <button class="ratio" data-r="hover45" data-preset="hover"><i></i><small>Hover 4:5</small></button>
+        <button class="ratio" data-r="square" data-preset="square"><i></i><small>1:1</small></button>
+        <button class="ratio" data-r="landscape169" data-preset="landscape"><i></i><small>16:9</small></button>
+        <button class="ratio" data-r="original" data-preset="original"><i></i><small>Original</small></button>
+      </div>
+      <p class="hint">Hover 4:5 recorta al centro con la proporción de las tarjetas de la página de trabajos.</p>
+    </div>
+
+    <div class="group">
+      <span class="label">Auto-ajuste de peso</span>
+      <div class="switch"><span>Limitar peso del archivo</span><input type="checkbox" id="capOn"></div>
+      <div class="field"><span>Peso máximo</span>
+        <span><input type="number" id="maxmb" min="0.2" step="0.5" value="10"> MB</span></div>
+      <p class="hint">Con esto activado, el bitrate y la resolución se calculan solos para no pasarse del peso.</p>
+    </div>
+
+    <div class="group">
+      <span class="label">Resolución máxima</span>
+      <div class="field"><span>Ancho</span><span><input type="number" id="maxw" min="16" step="2" value="1080"> px</span></div>
+      <div class="field"><span>Alto</span><span><input type="number" id="maxh" min="16" step="2" value="1350"> px</span></div>
+    </div>
+
+    <div class="group">
+      <span class="label">Video</span>
+      <div class="field"><span>Calidad (CRF <span id="crfval" class="num">23</span>)</span></div>
+      <div class="field"><input type="range" id="crf" min="18" max="32" value="23" aria-label="Calidad CRF"></div>
+      <p class="hint" id="crfhint">18 = casi sin pérdida · 32 = archivo mínimo. Se ignora si limitas el peso.</p>
+      <div class="field"><span>FPS máximo</span>
+        <select id="fps">
+          <option value="">como el original</option>
+          <option value="24">24</option>
+          <option value="30" selected>30</option>
+          <option value="60">60</option>
+        </select></div>
+      <div class="field"><span>Velocidad de codificado</span>
+        <select id="speed">
+          <option value="veryfast">rápido</option>
+          <option value="medium" selected>equilibrado</option>
+          <option value="slow">lento (comprime mejor)</option>
+        </select></div>
+      <div class="switch"><span>Quitar audio</span><input type="checkbox" id="mute" checked></div>
+    </div>
+
+    <div class="group">
+      <span class="label">Imágenes</span>
+      <div class="field"><span>Formato de salida</span>
+        <select id="imgfmt">
+          <option value="keep" selected>mismo formato</option>
+          <option value="webp">webp (recomendado)</option>
+          <option value="jpg">jpg</option>
+          <option value="png">png</option>
+        </select></div>
+      <div class="field"><span>Calidad (<span id="imgqval" class="num">85</span>%)</span></div>
+      <div class="field"><input type="range" id="imgq" min="30" max="100" value="85" aria-label="Calidad de imagen"></div>
+    </div>
+
+    <div class="group">
+      <span class="label">Salida</span>
+      <div class="outdir">
+        <input type="text" id="outdir" aria-label="Carpeta de salida">
+        <button class="linkbtn" id="openout">abrir</button>
+      </div>
+      <div class="field"><span>Archivos a la vez</span>
+        <span><input type="number" id="jobsn" min="1" max="16" value="4"></span></div>
+      <p class="hint">Los originales nunca se tocan: todo se guarda como copia nueva.</p>
+    </div>
+  </aside>
+</main>
+
+<div id="modal" role="dialog" aria-modal="true" aria-label="Vista previa">
+  <div class="modal-card">
+    <div class="modal-head">
+      <span class="label">Vista previa (primeros segundos, calidad real)</span>
+      <button class="linkbtn" id="closemodal">cerrar</button>
+    </div>
+    <div class="compare">
+      <figure><figcaption class="label">Original · <span id="origmeta" class="num"></span></figcaption>
+        <div id="origbox"></div></figure>
+      <figure><figcaption class="label">Resultado · <span id="prevmeta" class="num"></span></figcaption>
+        <div id="prevbox"></div></figure>
+    </div>
+    <p class="hint" id="estline"></p>
+  </div>
+</div>
+
+<div id="toast" role="status"></div>
+
+<script>
+"use strict";
+const $ = (s) => document.querySelector(s);
+const TOKEN = document.querySelector('meta[name="resizer-token"]').content;
+const state = { entries: [], converting: false };
+let pollTimer = null;
+
+const esc = (s) =>
+  String(s).replace(/[&<>"']/g, (c) =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+function fmtBytes(b) {
+  if (b == null) return "—";
+  if (b >= 1024 * 1024) return (b / 1048576).toFixed(1) + " MB";
+  if (b >= 1024) return (b / 1024).toFixed(0) + " KB";
+  return b + " B";
+}
+function toast(msg, ms = 3200) {
+  const t = $("#toast");
+  t.textContent = msg;
+  t.style.display = "block";
+  clearTimeout(t._h);
+  t._h = setTimeout(() => (t.style.display = "none"), ms);
+}
+async function api(path, body) {
+  const res = await fetch(path, {
+    method: body === undefined ? "GET" : "POST",
+    headers: body === undefined
+      ? {}
+      : { "Content-Type": "application/json", "X-Resizer-Token": TOKEN },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || ("Error " + res.status));
+  return data;
+}
+
+/* ---------- settings <-> panel ---------- */
+function settingsFromPanel() {
+  return {
+    ratio: document.querySelector(".ratio.on")?.dataset.r || "hover45",
+    max_width: +$("#maxw").value || 1080,
+    max_height: +$("#maxh").value || 1350,
+    max_mb: $("#capOn").checked ? (+$("#maxmb").value || 10) : null,
+    crf: +$("#crf").value,
+    fps_cap: $("#fps").value ? +$("#fps").value : null,
+    strip_audio: $("#mute").checked,
+    x264_preset: $("#speed").value,
+    image_format: $("#imgfmt").value,
+    image_quality: +$("#imgq").value,
+  };
+}
+function panelFromSettings(s) {
+  document.querySelectorAll(".ratio").forEach((b) => b.classList.toggle("on", b.dataset.r === s.ratio));
+  $("#maxw").value = s.max_width;
+  $("#maxh").value = s.max_height;
+  $("#capOn").checked = s.max_mb != null;
+  if (s.max_mb != null) $("#maxmb").value = s.max_mb;
+  $("#crf").value = s.crf; $("#crfval").textContent = s.crf;
+  $("#fps").value = s.fps_cap ?? "";
+  $("#mute").checked = s.strip_audio;
+  $("#speed").value = s.x264_preset;
+  $("#imgfmt").value = s.image_format;
+  $("#imgq").value = s.image_quality; $("#imgqval").textContent = s.image_quality;
+  reflectCap();
+}
+function reflectCap() {
+  const on = $("#capOn").checked;
+  $("#maxmb").disabled = !on;
+  $("#crf").disabled = on;
+  $("#crfhint").textContent = on
+    ? "El peso máximo manda: la calidad se calcula sola."
+    : "18 = casi sin pérdida · 32 = archivo mínimo.";
+}
+let pushTimer = null;
+function pushSettings() {
+  clearTimeout(pushTimer);
+  pushTimer = setTimeout(() => {
+    api("/api/settings", {
+      settings: settingsFromPanel(),
+      out_dir: $("#outdir").value,
+      jobs: +$("#jobsn").value || 4,
+    }).catch((e) => toast(e.message));
+  }, 250);
+}
+const PRESET_BOX = {
+  hover45: [1080, 1350, true, 10],
+  square: [1080, 1080, false, null],
+  landscape169: [1920, 1080, false, null],
+  original: [1920, 1920, false, null],
+};
+document.querySelectorAll(".ratio").forEach((b) =>
+  b.addEventListener("click", () => {
+    document.querySelectorAll(".ratio").forEach((x) => x.classList.remove("on"));
+    b.classList.add("on");
+    const [w, h, mute, mb] = PRESET_BOX[b.dataset.r];
+    $("#maxw").value = w; $("#maxh").value = h;
+    if (b.dataset.r === "hover45") { $("#mute").checked = mute; $("#capOn").checked = true; $("#maxmb").value = mb; }
+    reflectCap();
+    pushSettings();
+  })
+);
+["maxw","maxh","maxmb","fps","speed","imgfmt","outdir","jobsn"].forEach((id) =>
+  $("#" + id).addEventListener("change", pushSettings));
+$("#capOn").addEventListener("change", () => { reflectCap(); pushSettings(); });
+$("#mute").addEventListener("change", pushSettings);
+$("#crf").addEventListener("input", () => { $("#crfval").textContent = $("#crf").value; pushSettings(); });
+$("#imgq").addEventListener("input", () => { $("#imgqval").textContent = $("#imgq").value; pushSettings(); });
+
+/* ---------- queue rendering ---------- */
+function render() {
+  const q = $("#queue");
+  q.replaceChildren();
+  for (const e of state.entries) {
+    const row = document.createElement("div");
+    row.className = "row";
+    const kind = e.info.is_video
+      ? `${e.info.width}×${e.info.height} · ${Math.round(e.info.duration_s)}s`
+      : `${e.info.width}×${e.info.height} · imagen`;
+    const chipClass = { ready: "", working: "working", done: "done", error: "error" }[e.status] || "";
+    const chipText = { ready: "listo", working: Math.round(e.progress * 100) + "%", done: "hecho", error: "error" }[e.status];
+    let after = "";
+    if (e.out_size != null) {
+      const pct = e.size > 0 ? Math.round((e.out_size / e.size) * 100) - 100 : 0;
+      const tag = pct < 0 ? ` (−${-pct}%)` : pct > 0 ? ` (+${pct}%)` : "";
+      after = `<span class="delta ${pct < 0 ? "good" : ""}">${fmtBytes(e.out_size)}${tag}</span>`;
+    }
+    row.innerHTML = `
+      <div><div class="name" title="${esc(e.name)}">${esc(e.name)}</div><div class="meta">${kind}</div></div>
+      <div class="num meta">${fmtBytes(e.size)}</div>
+      <div>${e.status === "working" ? '<div class="bar"><i style="width:' + Math.round(e.progress * 100) + '%"></i></div>' : (after || "")}</div>
+      <div><span class="chip ${chipClass}">${chipText}</span></div>
+      <div>${e.status === "ready" ? '<button class="rowbtn" data-prev="' + e.id + '">previa</button>' : ""}</div>
+      ${e.error ? '<div class="errline">' + esc(e.error.split("\n")[0]) + "</div>" : ""}`;
+    q.appendChild(row);
+  }
+  q.querySelectorAll("[data-prev]").forEach((b) =>
+    b.addEventListener("click", () => showPreview(+b.dataset.prev)));
+
+  const ready = state.entries.filter((e) => e.status === "ready").length;
+  const done = state.entries.filter((e) => e.status === "done").length;
+  const total = state.entries.length;
+  $("#summary").textContent = total
+    ? `${total} archivo${total > 1 ? "s" : ""} · ${ready} por convertir · ${done} listos`
+    : "";
+  $("#convert").disabled = state.converting || ready === 0;
+  $("#convert").textContent = state.converting ? "Convirtiendo…" : "Convertir todo";
+}
+
+async function refresh() {
+  try {
+    const s = await api("/api/state");
+    state.entries = s.entries;
+    state.converting = s.converting;
+    if (!$("#outdir").value) $("#outdir").value = s.out_dir;
+    if (!refresh._init) { panelFromSettings(s.settings); $("#jobsn").value = s.jobs; refresh._init = true; }
+    render();
+    if (s.converting && !pollTimer) pollTimer = setInterval(refresh, 700);
+    if (!s.converting && pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+  } catch (e) { /* server going away */ }
+}
+
+/* ---------- adding files ---------- */
+async function uploadFile(file) {
+  try {
+    await fetch("/api/upload", {
+      method: "POST",
+      headers: { "X-Filename": encodeURIComponent(file.name), "X-Resizer-Token": TOKEN },
+      body: file,
+    }).then(async (r) => { if (!r.ok) throw new Error((await r.json()).error || "upload"); });
+  } catch (e) { toast(`${file.name}: ${e.message}`); }
+}
+async function addFiles(files) {
+  const media = [...files].filter((f) => /\.(mp4|mov|m4v|mkv|webm|avi|gif|mts|wmv|jpe?g|png|webp|bmp|tiff?|heic)$/i.test(f.name));
+  if (!media.length) { toast("Ninguno de esos archivos es imagen o video."); return; }
+  toast(`Subiendo ${media.length} archivo${media.length > 1 ? "s" : ""}…`);
+  // A few at a time so the UI stays responsive.
+  const queue = [...media];
+  const workers = Array.from({ length: 3 }, async () => {
+    while (queue.length) { await uploadFile(queue.shift()); await refresh(); }
+  });
+  await Promise.all(workers);
+  refresh();
+}
+function walkEntry(entry, out) {
+  return new Promise((resolve) => {
+    if (entry.isFile) entry.file((f) => { out.push(f); resolve(); }, resolve);
+    else if (entry.isDirectory) {
+      const reader = entry.createReader();
+      const readAll = () => reader.readEntries(async (es) => {
+        if (!es.length) return resolve();
+        for (const e of es) await walkEntry(e, out);
+        readAll();
+      }, resolve);
+      readAll();
+    } else resolve();
+  });
+}
+const drop = $("#drop");
+drop.addEventListener("click", () => $("#picker").click());
+drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") $("#picker").click(); });
+$("#picker").addEventListener("change", (e) => { addFiles(e.target.files); e.target.value = ""; });
+["dragover", "dragenter"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("over"); }));
+["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, () => drop.classList.remove("over")));
+drop.addEventListener("drop", async (e) => {
+  e.preventDefault();
+  const items = [...(e.dataTransfer.items || [])];
+  const files = [];
+  if (items.length && items[0].webkitGetAsEntry) {
+    for (const it of items) {
+      const entry = it.webkitGetAsEntry();
+      if (entry) await walkEntry(entry, files);
+    }
+  }
+  addFiles(files.length ? files : e.dataTransfer.files);
+});
+
+$("#addfolder").addEventListener("click", async () => {
+  const path = $("#folderpath").value.trim();
+  if (!path) { toast("Pega primero la ruta de la carpeta."); return; }
+  try {
+    const r = await api("/api/folder", { path, recursive: $("#recursive").checked });
+    toast(`Agregué ${r.added} archivo${r.added === 1 ? "" : "s"} de la carpeta.`);
+    refresh();
+  } catch (e) { toast(e.message); }
+});
+
+/* ---------- preview ---------- */
+async function showPreview(id) {
+  const entry = state.entries.find((e) => e.id === id);
+  if (!entry) return;
+  toast("Generando vista previa…", 8000);
+  try {
+    await api("/api/settings", { settings: settingsFromPanel(), out_dir: $("#outdir").value, jobs: +$("#jobsn").value || 4 });
+    const p = await api("/api/preview", { id });
+    $("#toast").style.display = "none";
+    const mk = (src, isVideo) => isVideo
+      ? `<video src="${src}" autoplay muted loop playsinline controls></video>`
+      : `<img src="${src}" alt="">`;
+    $("#origbox").innerHTML = mk(`/file/${id}/original`, entry.info.is_video);
+    $("#prevbox").innerHTML = mk(p.url + "?t=" + Date.now(), entry.info.is_video);
+    $("#origmeta").textContent = `${entry.info.width}×${entry.info.height} · ${fmtBytes(entry.size)}`;
+    $("#prevmeta").textContent = `${p.width}×${p.height}`;
+    $("#estline").textContent = entry.info.is_video
+      ? `Peso final estimado: ${fmtBytes(p.est_bytes)} (original: ${fmtBytes(entry.size)}). La conversión final usa mejor compresión que esta previa.`
+      : `Peso final: ${fmtBytes(p.est_bytes)} (original: ${fmtBytes(entry.size)}).`;
+    $("#modal").classList.add("open");
+  } catch (e) { toast("Vista previa falló: " + e.message); }
+}
+$("#closemodal").addEventListener("click", () => closeModal());
+$("#modal").addEventListener("click", (e) => { if (e.target === $("#modal")) closeModal(); });
+document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeModal(); });
+function closeModal() {
+  $("#modal").classList.remove("open");
+  $("#origbox").replaceChildren(); $("#prevbox").replaceChildren();
+}
+
+/* ---------- actions ---------- */
+$("#convert").addEventListener("click", async () => {
+  try {
+    await api("/api/settings", { settings: settingsFromPanel(), out_dir: $("#outdir").value, jobs: +$("#jobsn").value || 4 });
+    await api("/api/convert");
+    refresh();
+  } catch (e) { toast(e.message); }
+});
+$("#clear").addEventListener("click", async () => {
+  try { await api("/api/clear"); refresh(); } catch (e) { toast(e.message); }
+});
+$("#openout").addEventListener("click", () => api("/api/open-output").catch(() => {}));
+
+/* ---------- boot ---------- */
+refresh();
+setInterval(() => { if (!state.converting) refresh(); }, 4000);
+fetch("/api/state").then((r) => {
+  $("#ffstatus").textContent = r.ok ? "ffmpeg listo" : "";
+}).catch(() => {
+  const el = $("#ffstatus");
+  el.textContent = "servidor no responde";
+  el.classList.add("bad");
+});
+</script>
+</body>
+</html>
