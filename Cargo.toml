@@ -6,6 +6,20 @@ description = "Friendly ffmpeg wrapper to resize and compress images/videos for 
 license = "MIT"
 repository = "https://github.com/s110/resizer"
 
+[lib]
+name = "resizer"
+path = "src/lib.rs"
+
+# The double-clickable program (no console window on Windows).
+[[bin]]
+name = "resizer"
+path = "src/bin/resizer.rs"
+
+# The terminal interface.
+[[bin]]
+name = "resizer-cli"
+path = "src/bin/resizer-cli.rs"
+
 [dependencies]
 clap = { version = "4.5", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }

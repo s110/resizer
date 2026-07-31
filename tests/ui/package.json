@@ -1,0 +1,14 @@
+{
+  "name": "resizer-ui-tests",
+  "private": true,
+  "type": "module",
+  "description": "Browser tests for the resizer interface (setup screen, previews, A/B).",
+  "scripts": {
+    "test": "node ui-test.mjs ../../target/release/resizer",
+    "browser": "playwright install chromium"
+  },
+  "dependencies": {
+    "playwright-core": "1.62.1",
+    "playwright": "1.62.1"
+  }
+}

@@ -5,7 +5,9 @@ use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
+use crate::install;
 use crate::plan::{EncodePlan, MediaInfo, RateControl};
+use crate::NoWindow;
 
 #[derive(Debug, Clone)]
 pub struct Tools {
@@ -13,40 +15,19 @@ pub struct Tools {
     pub ffprobe: PathBuf,
 }
 
-/// Human-friendly install instructions shown when ffmpeg is missing.
+/// Shown when ffmpeg is missing and the user asked for a terminal-only run.
+/// The GUI never shows this: it offers to install ffmpeg instead.
 pub const INSTALL_HELP: &str = "\
-ffmpeg was not found. Install it and try again:
-  - Windows:  winget install Gyan.FFmpeg   (or download the \"essentials\" build from https://www.gyan.dev/ffmpeg/builds/)
-  - macOS:    brew install ffmpeg
-  - Linux:    sudo apt install ffmpeg
-You can also place ffmpeg/ffprobe next to this program, or set FFMPEG_PATH.";
+ffmpeg was not found. Let resizer install it for you:
+  resizer-cli install-ffmpeg            (shows the options for your system)
+  resizer-cli install-ffmpeg --method download
+Or open the graphical interface (run `resizer`) and follow the setup screen.";
 
-/// Locate ffmpeg + ffprobe: explicit path, FFMPEG_PATH, next to our own
-/// executable, then PATH.
+/// Locate ffmpeg + ffprobe, in order: explicit path, FFMPEG_PATH, the copy
+/// this program installed for itself, the system PATH, and finally next to
+/// our own executable (a portable folder still works, but is never required).
 pub fn find_tools(explicit: Option<&Path>) -> Result<Tools, String> {
-    let exe_name = |base: &str| {
-        if cfg!(windows) {
-            format!("{base}.exe")
-        } else {
-            base.to_string()
-        }
-    };
-
-    let mut candidates: Vec<PathBuf> = Vec::new();
-    if let Some(p) = explicit {
-        candidates.push(p.to_path_buf());
-    }
-    if let Ok(p) = std::env::var("FFMPEG_PATH") {
-        candidates.push(PathBuf::from(p));
-    }
-    if let Ok(me) = std::env::current_exe() {
-        if let Some(dir) = me.parent() {
-            candidates.push(dir.join(exe_name("ffmpeg")));
-        }
-    }
-    candidates.push(PathBuf::from(exe_name("ffmpeg")));
-
-    for c in candidates {
+    for c in candidate_paths(explicit) {
         let probe = sibling_ffprobe(&c);
         if runs(&c) && runs(&probe) {
             return Ok(Tools {
@@ -56,6 +37,44 @@ pub fn find_tools(explicit: Option<&Path>) -> Result<Tools, String> {
         }
     }
     Err(INSTALL_HELP.to_string())
+}
+
+/// Every place ffmpeg might live, in priority order.
+pub fn candidate_paths(explicit: Option<&Path>) -> Vec<PathBuf> {
+    // An explicit choice (--ffmpeg or FFMPEG_PATH) is authoritative: if the
+    // user names a build, silently running a different one would be wrong.
+    if let Some(p) = explicit {
+        return vec![p.to_path_buf()];
+    }
+    if let Some(p) = std::env::var_os("FFMPEG_PATH") {
+        return vec![PathBuf::from(p)];
+    }
+
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    // Our own managed copy (installed by the setup screen).
+    candidates.push(install::bin_dir().join(install::exe_name("ffmpeg")));
+    // Anything on PATH, including package-manager installs.
+    candidates.push(PathBuf::from(install::exe_name("ffmpeg")));
+    // Package managers drop ffmpeg in well-known places that a *running*
+    // process cannot see yet: PATH is inherited at launch, so a fresh winget
+    // or Homebrew install would otherwise look like a failed one.
+    candidates.extend(
+        install::package_manager_dirs()
+            .into_iter()
+            .map(|d| d.join(install::exe_name("ffmpeg"))),
+    );
+    // Portable layout: alongside the executable.
+    if let Ok(me) = std::env::current_exe() {
+        if let Some(dir) = me.parent() {
+            candidates.push(dir.join(install::exe_name("ffmpeg")));
+        }
+    }
+    candidates
+}
+
+/// True when ffmpeg is usable right now.
+pub fn is_available() -> bool {
+    find_tools(None).is_ok()
 }
 
 /// ffprobe living next to a given ffmpeg path (or bare name for PATH lookup).
@@ -74,8 +93,10 @@ fn sibling_ffprobe(ffmpeg: &Path) -> PathBuf {
 fn runs(bin: &Path) -> bool {
     Command::new(bin)
         .arg("-version")
+        .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
+        .no_window()
         .status()
         .map(|s| s.success())
         .unwrap_or(false)
@@ -84,6 +105,7 @@ fn runs(bin: &Path) -> bool {
 pub fn version(tools: &Tools) -> String {
     Command::new(&tools.ffmpeg)
         .arg("-version")
+        .no_window()
         .output()
         .ok()
         .and_then(|o| String::from_utf8(o.stdout).ok())
@@ -103,6 +125,7 @@ pub fn probe(tools: &Tools, path: &Path) -> Result<MediaInfo, String> {
             "-show_format",
         ])
         .arg(path)
+        .no_window()
         .output()
         .map_err(|e| format!("failed to run ffprobe: {e}"))?;
     if !out.status.success() {
@@ -370,6 +393,7 @@ pub fn run_with_progress(
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
+        .no_window()
         .spawn()
         .map_err(|e| format!("failed to start ffmpeg: {e}"))?;
 
@@ -415,6 +439,7 @@ pub fn run_quiet(tools: &Tools, args: &[String]) -> Result<(), String> {
     let out = Command::new(&tools.ffmpeg)
         .args(args)
         .stdin(Stdio::null())
+        .no_window()
         .output()
         .map_err(|e| format!("failed to start ffmpeg: {e}"))?;
     if out.status.success() {

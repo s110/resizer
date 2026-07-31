@@ -50,3 +50,34 @@ jobs:
 
       - run: cargo test --all-targets
       - run: cargo build --release
+
+  ui:
+    name: interface tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install ffmpeg
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+
+      - run: cargo build --release --bin resizer
+
+      # `npx playwright` without a pinned version fetches @latest, whose
+      # Chromium revision drifts from the pinned playwright-core the tests
+      # import. Use the locally installed, pinned copy instead.
+      - name: Install browser
+        working-directory: tests/ui
+        run: |
+          npm install --no-audit --no-fund
+          npx --no-install playwright install --with-deps chromium
+
+      # Covers the ffmpeg setup screen, the enlarged previews, and the A/B
+      # overlay comparison — behaviour that only exists in the page.
+      - name: Run interface tests
+        working-directory: tests/ui
+        run: node ui-test.mjs ../../target/release/resizer

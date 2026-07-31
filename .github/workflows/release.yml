@@ -51,16 +51,18 @@ jobs:
         run: |
           mkdir -p dist
           cp target/${{ matrix.target }}/release/resizer dist/
+          cp target/${{ matrix.target }}/release/resizer-cli dist/
           cp README.md dist/
-          tar -czf ${{ matrix.archive }} -C dist resizer README.md
+          tar -czf ${{ matrix.archive }} -C dist resizer resizer-cli README.md
       - name: Package (windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path dist | Out-Null
           Copy-Item target/${{ matrix.target }}/release/resizer.exe dist/
+          Copy-Item target/${{ matrix.target }}/release/resizer-cli.exe dist/
           Copy-Item README.md dist/
-          Compress-Archive -Path dist/resizer.exe, dist/README.md -DestinationPath ${{ matrix.archive }}
+          Compress-Archive -Path dist/resizer.exe, dist/resizer-cli.exe, dist/README.md -DestinationPath ${{ matrix.archive }}
 
       - uses: actions/upload-artifact@v4
         with:

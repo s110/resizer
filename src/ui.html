@@ -37,6 +37,8 @@
   }
 
   * { box-sizing: border-box; margin: 0; }
+  /* `hidden` must win over any display we set on a class below. */
+  [hidden] { display: none !important; }
   html, body { height: 100%; }
   body {
     background: var(--bg); color: var(--ink);
@@ -150,28 +152,116 @@
   .outdir input { flex: 1; border: 1px solid var(--line); padding: 6px 8px; min-width: 0; font-size: 12px; }
   .linkbtn { text-decoration: underline; text-underline-offset: 3px; }
 
+  /* ---------- ffmpeg setup screen ---------- */
+  #setup {
+    position: fixed; inset: 0; background: var(--bg); z-index: 20;
+    display: none; align-items: flex-start; justify-content: center;
+    padding: 6vh 24px; overflow: auto;
+  }
+  #setup.open { display: flex; }
+  .setup-card { width: 100%; max-width: 660px; display: flex; flex-direction: column; gap: 20px; }
+  .setup-card h1 { font-size: 22px; font-weight: 600; letter-spacing: -0.025em; }
+  .setup-card p { color: var(--grey); max-width: 60ch; }
+  .methods { display: flex; flex-direction: column; gap: 10px; }
+  .method {
+    display: flex; gap: 12px; align-items: flex-start; text-align: left;
+    border: 1px solid var(--line); padding: 14px 16px; width: 100%;
+  }
+  .method:hover { border-color: var(--grey); }
+  .method.on { border-color: var(--ink); border-width: 2px; padding: 13px 15px; }
+  .method .radio {
+    width: 14px; height: 14px; border: 1px solid var(--grey); border-radius: 50%;
+    margin-top: 3px; flex: none;
+  }
+  .method.on .radio { border: 4px solid var(--ink); }
+  .method .body { display: flex; flex-direction: column; gap: 3px; }
+  .method .title { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+  .method .name { font-weight: 500; }
+  .badge {
+    font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em;
+    border: 1px solid var(--ink); padding: 1px 6px;
+  }
+  .badge.warn { border-color: var(--grey); color: var(--grey); }
+  .method .why { color: var(--grey); font-size: 13px; }
+  #setuplog {
+    border-left: 2px solid var(--line); padding-left: 12px; display: none;
+    flex-direction: column; gap: 4px; font-size: 13px; color: var(--grey);
+  }
+  #setuplog.on { display: flex; }
+  #setuplog .last { color: var(--ink); }
+  #setuperr { color: var(--err); display: none; }
+  #setuperr.on { display: block; }
+
   /* ---------- preview modal ---------- */
   #modal {
-    position: fixed; inset: 0; background: color-mix(in srgb, var(--bg) 88%, transparent);
-    display: none; align-items: center; justify-content: center; padding: 24px;
+    position: fixed; inset: 0; background: color-mix(in srgb, var(--bg) 92%, transparent);
+    display: none; align-items: center; justify-content: center; padding: 16px;
   }
   #modal.open { display: flex; }
   .modal-card {
-    background: var(--bg); border: 1px solid var(--ink); max-width: 900px; width: 100%;
-    padding: 20px; display: flex; flex-direction: column; gap: 14px;
-    max-height: 92vh; overflow: auto;
+    background: var(--bg); border: 1px solid var(--ink); max-width: 1500px; width: 100%;
+    padding: 18px; display: flex; flex-direction: column; gap: 12px;
+    max-height: 96vh; overflow: auto;
   }
-  .compare { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  .modal-head { display: flex; justify-content: space-between; align-items: baseline; gap: 16px; }
+  .modes { display: flex; gap: 0; border: 1px solid var(--line); }
+  .modes button {
+    font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em;
+    padding: 6px 14px; color: var(--grey);
+  }
+  .modes button.on { background: var(--ink); color: var(--bg); }
+
+  /* side-by-side */
+  .compare { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
   @media (max-width: 700px) { .compare { grid-template-columns: 1fr; } }
-  .compare figure { display: flex; flex-direction: column; gap: 6px; }
+  .compare figure { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
   .compare video, .compare img {
-    width: 100%; max-height: 55vh; object-fit: contain; background: var(--panel);
+    width: 100%; max-height: 74vh; object-fit: contain; background: var(--panel);
     border: 1px solid var(--line);
   }
-  .modal-head { display: flex; justify-content: space-between; align-items: baseline; }
+
+  /* A/B overlay: both clips stacked in the same box, split by a draggable
+     handle so the eye compares the same pixels instead of jumping around. */
+  #abbox {
+    position: relative; margin: 0 auto;
+    /* Both dimensions are derived from the clip's own ratio (set inline as
+       --ar) so the box hugs the video: no dead margins where dragging the
+       divider would do nothing. */
+    height: min(74vh, calc(96vw * var(--ar, 0.8)));
+    width: calc(min(74vh, calc(96vw * var(--ar, 0.8))) / var(--ar, 0.8));
+    max-width: 100%;
+    background: var(--panel); border: 1px solid var(--line);
+    overflow: hidden; touch-action: none; cursor: ew-resize; user-select: none;
+  }
+  #abbox > .layer { position: absolute; inset: 0; }
+  #abbox .layer video, #abbox .layer img {
+    position: absolute; inset: 0; width: 100%; height: 100%;
+    /* `cover` matches the centred crop the converter applies, so both halves
+       of the split show the same pixels — the comparison is about quality,
+       not framing. */
+    object-fit: cover;
+  }
+  #abbox .layer.after { clip-path: inset(0 0 0 var(--split, 50%)); }
+  #abhandle {
+    position: absolute; top: 0; bottom: 0; left: var(--split, 50%); width: 2px;
+    background: var(--ink); pointer-events: none;
+  }
+  #abhandle::after {
+    content: ''; position: absolute; top: 50%; left: 50%;
+    width: 34px; height: 34px; transform: translate(-50%, -50%);
+    border: 2px solid var(--ink); border-radius: 50%; background: var(--bg);
+  }
+  #abbox .tag {
+    position: absolute; top: 10px; font-size: 10px; text-transform: uppercase;
+    letter-spacing: 0.06em; background: var(--ink); color: var(--bg); padding: 3px 8px;
+    pointer-events: none;
+  }
+  #abbox .tag.a { left: 10px; }
+  #abbox .tag.b { right: 10px; }
+  .ab-hint { color: var(--grey); font-size: 12px; text-align: center; }
 
   #toast {
-    position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%);
+    position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); z-index: 50;
     background: var(--ink); color: var(--bg); padding: 10px 16px; font-size: 13px;
     display: none; max-width: 90vw;
   }
@@ -286,18 +376,52 @@
   </aside>
 </main>
 
+<div id="setup" role="dialog" aria-modal="true" aria-label="Instalar ffmpeg">
+  <div class="setup-card">
+    <h1>Falta instalar ffmpeg</h1>
+    <p id="setupintro">
+      resizer usa ffmpeg para convertir los archivos. Todavía no lo tienes instalado —
+      elige cómo prefieres instalarlo y yo me encargo del resto.
+    </p>
+    <div class="methods" id="methods" role="radiogroup" aria-label="Forma de instalación"></div>
+    <div class="actions">
+      <button class="btn primary" id="doinstall">Instalar ffmpeg</button>
+      <span class="hint" id="setupstatus"></span>
+    </div>
+    <div id="setuplog" aria-live="polite"></div>
+    <p id="setuperr"></p>
+  </div>
+</div>
+
 <div id="modal" role="dialog" aria-modal="true" aria-label="Vista previa">
   <div class="modal-card">
     <div class="modal-head">
-      <span class="label">Vista previa (primeros segundos, calidad real)</span>
+      <span class="label">Vista previa · <span id="prevtitle"></span></span>
+      <div class="modes" role="tablist" aria-label="Modo de comparación">
+        <button id="modeab" class="on" role="tab" aria-selected="true">A/B superpuesto</button>
+        <button id="modeside" role="tab" aria-selected="false">Lado a lado</button>
+      </div>
       <button class="linkbtn" id="closemodal">cerrar</button>
     </div>
-    <div class="compare">
+
+    <div id="abwrap">
+      <div id="abbox">
+        <div class="layer before" id="ablayerA"></div>
+        <div class="layer after" id="ablayerB"></div>
+        <div id="abhandle"></div>
+        <span class="tag a">Original</span>
+        <span class="tag b">Resultado</span>
+      </div>
+      <p class="ab-hint">Arrastra la línea (o usa ← →) para ver el antes y el después en el mismo sitio.</p>
+    </div>
+
+    <div class="compare" id="sidewrap" hidden>
       <figure><figcaption class="label">Original · <span id="origmeta" class="num"></span></figcaption>
         <div id="origbox"></div></figure>
       <figure><figcaption class="label">Resultado · <span id="prevmeta" class="num"></span></figcaption>
         <div id="prevbox"></div></figure>
     </div>
+
     <p class="hint" id="estline"></p>
   </div>
 </div>
@@ -308,7 +432,10 @@
 "use strict";
 const $ = (s) => document.querySelector(s);
 const TOKEN = document.querySelector('meta[name="resizer-token"]').content;
-const state = { entries: [], converting: false };
+const state = {
+  entries: [], converting: false, ffmpegReady: true,
+  previewMode: "ab", preview: null,
+};
 let pollTimer = null;
 
 const esc = (s) =>
@@ -458,13 +585,100 @@ async function refresh() {
     const s = await api("/api/state");
     state.entries = s.entries;
     state.converting = s.converting;
+    applyFfmpegState(s);
     if (!$("#outdir").value) $("#outdir").value = s.out_dir;
     if (!refresh._init) { panelFromSettings(s.settings); $("#jobsn").value = s.jobs; refresh._init = true; }
     render();
-    if (s.converting && !pollTimer) pollTimer = setInterval(refresh, 700);
-    if (!s.converting && pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+    const busy = s.converting || (s.setup && s.setup.installing);
+    if (busy && !pollTimer) pollTimer = setInterval(refresh, 700);
+    if (!busy && pollTimer) { clearInterval(pollTimer); pollTimer = null; }
   } catch (e) { /* server going away */ }
 }
+
+/* ---------- ffmpeg setup ---------- */
+function applyFfmpegState(s) {
+  state.ffmpegReady = s.ffmpeg_ready;
+  const st = $("#ffstatus");
+  st.textContent = s.ffmpeg_ready ? "ffmpeg listo" : "falta ffmpeg";
+  st.classList.toggle("bad", !s.ffmpeg_ready);
+
+  if (!s.ffmpeg_ready && !$("#setup").classList.contains("open")) openSetup();
+  if (s.ffmpeg_ready && $("#setup").classList.contains("open")) {
+    $("#setup").classList.remove("open");
+    toast("ffmpeg quedó instalado. ¡Ya puedes convertir!");
+  }
+
+  const setup = s.setup || {};
+  const log = $("#setuplog");
+  log.classList.toggle("on", (setup.steps || []).length > 0);
+  log.replaceChildren();
+  (setup.steps || []).forEach((step, i, arr) => {
+    const d = document.createElement("div");
+    if (i === arr.length - 1 && !setup.error) d.className = "last";
+    d.textContent = step;
+    log.appendChild(d);
+  });
+  $("#setuperr").textContent = setup.error || "";
+  $("#setuperr").classList.toggle("on", !!setup.error);
+  $("#doinstall").disabled = !!setup.installing;
+  $("#doinstall").textContent = setup.installing ? "Instalando…" : "Instalar ffmpeg";
+  $("#setupstatus").textContent = setup.installing
+    ? "Esto puede tardar un par de minutos."
+    : "";
+}
+
+async function openSetup() {
+  $("#setup").classList.add("open");
+  // Guard on the fetch, not on the screen being open: a failed load must be
+  // retried on the next poll instead of leaving an empty screen forever.
+  if (openSetup._loaded || openSetup._loading) return;
+  openSetup._loading = true;
+  try {
+    const r = await api("/api/ffmpeg/options");
+    openSetup._loaded = true;
+    const box = $("#methods");
+    box.replaceChildren();
+    r.options.forEach((o, i) => {
+      const b = document.createElement("button");
+      b.className = "method" + (o.recommended ? " on" : i === 0 && !r.options.some(x => x.recommended) ? " on" : "");
+      b.dataset.method = o.id;
+      b.setAttribute("role", "radio");
+      b.setAttribute("aria-checked", o.recommended ? "true" : "false");
+      b.innerHTML = `
+        <span class="radio"></span>
+        <span class="body">
+          <span class="title">
+            <span class="name">${esc(o.label)}</span>
+            ${o.recommended ? '<span class="badge">Recomendado</span>' : ""}
+            ${o.needs_admin ? '<span class="badge warn">Pide permiso</span>' : ""}
+          </span>
+          <span class="why">${esc(o.detail)}</span>
+        </span>`;
+      b.addEventListener("click", () => {
+        box.querySelectorAll(".method").forEach((x) => {
+          x.classList.remove("on");
+          x.setAttribute("aria-checked", "false");
+        });
+        b.classList.add("on");
+        b.setAttribute("aria-checked", "true");
+      });
+      box.appendChild(b);
+    });
+  } catch (e) {
+    toast("No pude leer las formas de instalación: " + e.message);
+  } finally {
+    openSetup._loading = false;
+  }
+}
+
+$("#doinstall").addEventListener("click", async () => {
+  const chosen = document.querySelector(".method.on");
+  if (!chosen) { toast("Elige primero una forma de instalación."); return; }
+  try {
+    await api("/api/ffmpeg/install", { method: chosen.dataset.method });
+    refresh();
+  } catch (e) { toast(e.message); }
+});
 
 /* ---------- adding files ---------- */
 async function uploadFile(file) {
@@ -532,25 +746,141 @@ $("#addfolder").addEventListener("click", async () => {
 });
 
 /* ---------- preview ---------- */
+/** `mode` is "ab" (paired playback, no controls, no independent loop) or
+ *  "side" (a normal looping player with controls). */
+function mediaTag(src, isVideo, mode) {
+  if (!isVideo) return `<img src="${src}" alt="">`;
+  return mode === "ab"
+    ? `<video src="${src}" autoplay muted playsinline preload="auto"></video>`
+    : `<video src="${src}" autoplay muted loop playsinline controls preload="metadata"></video>`;
+}
+
+/** Keep the two A/B clips showing the same moment. The result is only the
+ *  first seconds of the clip, so the original is looped over that same window
+ *  — otherwise the two halves of the split drift into unrelated frames. */
+function syncAB() {
+  const a = $("#ablayerA").querySelector("video");
+  const b = $("#ablayerB").querySelector("video");
+  if (!a || !b) return;
+  // Neither element has `loop`: the pair restarts together, below.
+  const window_ = () => (isFinite(b.duration) && b.duration > 0 ? b.duration : 2.5);
+  const restart = () => {
+    a.currentTime = 0;
+    b.currentTime = 0;
+    a.play().catch(() => {});
+    b.play().catch(() => {});
+  };
+  a.addEventListener("timeupdate", () => {
+    // Stop the original from running past the preview's window.
+    if (a.currentTime >= window_() - 0.05) { restart(); return; }
+    if (Math.abs(a.currentTime - b.currentTime) > 0.12) b.currentTime = a.currentTime;
+  });
+  b.addEventListener("ended", restart);
+  a.addEventListener("ended", restart);
+}
+
+function setSplit(pct) {
+  const clamped = Math.max(0, Math.min(100, pct));
+  $("#abbox").style.setProperty("--split", clamped + "%");
+  $("#abbox").dataset.split = clamped.toFixed(1);
+}
+
+function initABDrag() {
+  const box = $("#abbox");
+  if (box.dataset.bound) return;
+  box.dataset.bound = "1";
+  const move = (clientX) => {
+    const r = box.getBoundingClientRect();
+    setSplit(((clientX - r.left) / r.width) * 100);
+  };
+  let dragging = false;
+  box.addEventListener("pointerdown", (e) => {
+    dragging = true;
+    box.setPointerCapture(e.pointerId);
+    move(e.clientX);
+  });
+  box.addEventListener("pointermove", (e) => { if (dragging) move(e.clientX); });
+  ["pointerup", "pointercancel"].forEach((ev) =>
+    box.addEventListener(ev, () => { dragging = false; }));
+  box.tabIndex = 0;
+  box.addEventListener("keydown", (e) => {
+    const cur = parseFloat(box.dataset.split || "50");
+    if (e.key === "ArrowLeft") { setSplit(cur - 4); e.preventDefault(); }
+    if (e.key === "ArrowRight") { setSplit(cur + 4); e.preventDefault(); }
+  });
+}
+
+function setPreviewMode(mode) {
+  state.previewMode = mode;
+  const ab = mode === "ab";
+  $("#abwrap").hidden = !ab;
+  $("#sidewrap").hidden = ab;
+  $("#modeab").classList.toggle("on", ab);
+  $("#modeside").classList.toggle("on", !ab);
+  $("#modeab").setAttribute("aria-selected", String(ab));
+  $("#modeside").setAttribute("aria-selected", String(!ab));
+  mountPreviewMedia(mode);
+}
+
+/** Load media into the visible comparison only, and drop the other one, so a
+ *  preview never has four videos streaming from the local server at once. */
+function mountPreviewMedia(mode) {
+  const p = state.preview;
+  if (!p) return;
+  const ab = mode === "ab";
+  if (ab) {
+    $("#origbox").replaceChildren();
+    $("#prevbox").replaceChildren();
+    if (!$("#ablayerA").querySelector("video, img")) {
+      $("#ablayerA").innerHTML = mediaTag(p.origSrc, p.isVideo, "ab");
+      $("#ablayerB").innerHTML = mediaTag(p.prevSrc, p.isVideo, "ab");
+      if (p.isVideo) syncAB();
+    }
+  } else {
+    $("#ablayerA").replaceChildren();
+    $("#ablayerB").replaceChildren();
+    if (!$("#origbox").querySelector("video, img")) {
+      $("#origbox").innerHTML = mediaTag(p.origSrc, p.isVideo, "side");
+      $("#prevbox").innerHTML = mediaTag(p.prevSrc, p.isVideo, "side");
+    }
+  }
+}
+$("#modeab").addEventListener("click", () => setPreviewMode("ab"));
+$("#modeside").addEventListener("click", () => setPreviewMode("side"));
+
 async function showPreview(id) {
   const entry = state.entries.find((e) => e.id === id);
   if (!entry) return;
-  toast("Generando vista previa…", 8000);
+  toast("Generando vista previa…", 15000);
   try {
     await api("/api/settings", { settings: settingsFromPanel(), out_dir: $("#outdir").value, jobs: +$("#jobsn").value || 4 });
     const p = await api("/api/preview", { id });
     $("#toast").style.display = "none";
-    const mk = (src, isVideo) => isVideo
-      ? `<video src="${src}" autoplay muted loop playsinline controls></video>`
-      : `<img src="${src}" alt="">`;
-    $("#origbox").innerHTML = mk(`/file/${id}/original`, entry.info.is_video);
-    $("#prevbox").innerHTML = mk(p.url + "?t=" + Date.now(), entry.info.is_video);
+    const isVideo = entry.info.is_video;
+    state.preview = {
+      isVideo,
+      origSrc: `/file/${id}/original`,
+      prevSrc: p.url + "?t=" + Date.now(),
+    };
+
+    // Size the A/B box from the result's own ratio so the whole width of the
+    // box is picture — dragging the divider always changes something.
+    $("#abbox").style.setProperty("--ar", (p.height / p.width).toFixed(4));
+    ["#ablayerA", "#ablayerB", "#origbox", "#prevbox"].forEach((sel) =>
+      $(sel).replaceChildren());
+    setSplit(50);
+    initABDrag();
+
     $("#origmeta").textContent = `${entry.info.width}×${entry.info.height} · ${fmtBytes(entry.size)}`;
-    $("#prevmeta").textContent = `${p.width}×${p.height}`;
-    $("#estline").textContent = entry.info.is_video
-      ? `Peso final estimado: ${fmtBytes(p.est_bytes)} (original: ${fmtBytes(entry.size)}). La conversión final usa mejor compresión que esta previa.`
+    $("#prevmeta").textContent = `${p.width}×${p.height} · ~${fmtBytes(p.est_bytes)}`;
+    $("#prevtitle").textContent = `${entry.name} · ${entry.info.width}×${entry.info.height} → ${p.width}×${p.height}`;
+    $("#estline").textContent = isVideo
+      ? `Peso final estimado: ${fmtBytes(p.est_bytes)} (original: ${fmtBytes(entry.size)}). La previa son los primeros segundos; la conversión final comprime un poco mejor.`
       : `Peso final: ${fmtBytes(p.est_bytes)} (original: ${fmtBytes(entry.size)}).`;
+
+    setPreviewMode(state.previewMode || "ab");
     $("#modal").classList.add("open");
+    $("#abbox").focus({ preventScroll: true });
   } catch (e) { toast("Vista previa falló: " + e.message); }
 }
 $("#closemodal").addEventListener("click", () => closeModal());
@@ -558,7 +888,10 @@ $("#modal").addEventListener("click", (e) => { if (e.target === $("#modal")) clo
 document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeModal(); });
 function closeModal() {
   $("#modal").classList.remove("open");
-  $("#origbox").replaceChildren(); $("#prevbox").replaceChildren();
+  state.preview = null;
+  // Dropping the media elements stops playback and frees the decoders.
+  ["#origbox", "#prevbox", "#ablayerA", "#ablayerB"].forEach((sel) =>
+    $(sel).replaceChildren());
 }
 
 /* ---------- actions ---------- */
@@ -577,13 +910,7 @@ $("#openout").addEventListener("click", () => api("/api/open-output").catch(() =
 /* ---------- boot ---------- */
 refresh();
 setInterval(() => { if (!state.converting) refresh(); }, 4000);
-fetch("/api/state").then((r) => {
-  $("#ffstatus").textContent = r.ok ? "ffmpeg listo" : "";
-}).catch(() => {
-  const el = $("#ffstatus");
-  el.textContent = "servidor no responde";
-  el.classList.add("bad");
-});
+window.addEventListener("beforeunload", () => { if (pollTimer) clearInterval(pollTimer); });
 </script>
 </body>
 </html>
