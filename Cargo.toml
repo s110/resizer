@@ -1,6 +1,6 @@
 [package]
 name = "resizer"
-version = "1.0.0"
+version = "1.0.1"
 edition = "2021"
 description = "Friendly ffmpeg wrapper to resize and compress images/videos for kamiru.art (hover previews and media grids)"
 license = "MIT"
