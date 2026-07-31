@@ -14,7 +14,7 @@ fn ffmpeg_available() -> bool {
 }
 
 fn bin() -> &'static str {
-    env!("CARGO_BIN_EXE_resizer")
+    env!("CARGO_BIN_EXE_resizer-cli")
 }
 
 fn tmp_dir(tag: &str) -> PathBuf {
@@ -71,6 +71,13 @@ fn probe_dims(path: &Path) -> (u32, u32, bool) {
         video["height"].as_u64().unwrap() as u32,
         audio,
     )
+}
+
+/// A HOME with no managed ffmpeg install, so lookup really does fail.
+fn no_ffmpeg_home() -> PathBuf {
+    let d = std::env::temp_dir().join(format!("resizer-nohome-{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&d);
+    d
 }
 
 macro_rules! require_ffmpeg {
@@ -220,15 +227,20 @@ fn probe_subcommand_reports_media_info() {
 
 #[test]
 fn missing_ffmpeg_gives_friendly_error() {
-    // Point --ffmpeg at a non-existent binary: the error must be the install
-    // help, not a panic. (Runs even without ffmpeg installed.)
+    // Point --ffmpeg at a non-existent binary: the error must point at the
+    // installer, not panic. (Runs even without ffmpeg installed.)
     let out = Command::new(bin())
         .args(["--ffmpeg", "/definitely/not/here/ffmpeg", "probe", "x.mp4"])
         .env("FFMPEG_PATH", "/definitely/not/here/either")
         .env("PATH", "")
+        .env("HOME", no_ffmpeg_home())
         .output()
         .unwrap();
     assert!(!out.status.success());
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(err.contains("ffmpeg was not found"), "got: {err}");
+    assert!(
+        err.contains("install-ffmpeg"),
+        "must point at the installer: {err}"
+    );
 }

@@ -1,24 +1,18 @@
-//! resizer — a friendly ffmpeg wrapper that prepares images and videos for
-//! kamiru.art (hover cards, media grids) without anyone having to learn ffmpeg.
-//!
-//! Run with no arguments to open the local GUI in the browser. Power users get
-//! `resizer convert` for scripted/bulk work.
-
-mod ffmpeg;
-mod jobs;
-mod plan;
-mod server;
+//! resizer-cli — the terminal interface. Double-clicking users want the
+//! `resizer` binary instead (graphical, no console window); this one exists
+//! for scripted and bulk work.
 
 use std::path::PathBuf;
 use std::sync::Mutex;
 
 use clap::{Parser, Subcommand};
 
-use plan::{ImageFormat, Settings};
+use resizer::plan::{ImageFormat, Settings};
+use resizer::{ffmpeg, install, jobs, server};
 
 #[derive(Parser)]
 #[command(
-    name = "resizer",
+    name = "resizer-cli",
     version,
     about = "Resize & compress images/videos for the web (friendly ffmpeg wrapper)",
     long_about = None
@@ -93,10 +87,43 @@ enum Cmd {
     },
     /// Show what ffprobe sees in a file.
     Probe { input: PathBuf },
+    /// Install ffmpeg. With no --method, lists the options for this system.
+    InstallFfmpeg {
+        /// winget | chocolatey | homebrew | apt | dnf | pacman | download
+        #[arg(long)]
+        method: Option<String>,
+    },
 }
 
 fn main() {
     let cli = Cli::parse();
+
+    // These two work without ffmpeg: one installs it, the other offers to.
+    match &cli.command {
+        Some(Cmd::InstallFfmpeg { method }) => {
+            std::process::exit(match run_install(method.as_deref()) {
+                Ok(()) => 0,
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    1
+                }
+            });
+        }
+        Some(Cmd::Gui { .. }) | None => {
+            let (port, no_browser) = match cli.command {
+                Some(Cmd::Gui { port, no_browser }) => (port, no_browser),
+                _ => (0, false),
+            };
+            let tools = ffmpeg::find_tools(cli.ffmpeg.as_deref()).ok();
+            if let Err(e) = server::run(tools, port, no_browser) {
+                eprintln!("error: {e}");
+                std::process::exit(1);
+            }
+            return;
+        }
+        _ => {}
+    }
+
     let tools = match ffmpeg::find_tools(cli.ffmpeg.as_deref()) {
         Ok(t) => t,
         Err(e) => {
@@ -106,8 +133,9 @@ fn main() {
     };
 
     let result = match cli.command {
-        None => server::run(tools, 0, false),
-        Some(Cmd::Gui { port, no_browser }) => server::run(tools, port, no_browser),
+        None | Some(Cmd::Gui { .. }) | Some(Cmd::InstallFfmpeg { .. }) => {
+            unreachable!("handled above")
+        }
         Some(Cmd::Probe { input }) => match ffmpeg::probe(&tools, &input) {
             Ok(info) => {
                 println!("{}", serde_json::to_string_pretty(&info).unwrap());
@@ -292,6 +320,52 @@ fn run_convert(
     if failed > 0 {
         return Err(format!("{failed} file(s) failed"));
     }
+    Ok(())
+}
+
+/// `install-ffmpeg`: list the options, or run the chosen one.
+fn run_install(method: Option<&str>) -> Result<(), String> {
+    if ffmpeg::is_available() && method.is_none() {
+        println!("ffmpeg ya está instalado y funcionando.");
+        return Ok(());
+    }
+
+    let options = install::options();
+    let Some(method) = method else {
+        println!("ffmpeg no está instalado. Formas de instalarlo en este sistema:\n");
+        for o in &options {
+            println!(
+                "  --method {:<12} {}{}\n      {}",
+                o.id,
+                o.label,
+                if o.recommended { "  (recomendado)" } else { "" },
+                o.detail
+            );
+        }
+        println!(
+            "\nEjemplo: resizer-cli install-ffmpeg --method {}",
+            options
+                .iter()
+                .find(|o| o.recommended)
+                .map(|o| o.id)
+                .unwrap_or("download")
+        );
+        return Ok(());
+    };
+
+    let parsed =
+        install::Method::from_id(method).ok_or_else(|| format!("método desconocido '{method}'"))?;
+    if !options.iter().any(|o| o.id == parsed.id()) {
+        return Err(format!(
+            "'{method}' no está disponible en este sistema (prueba: {})",
+            options.iter().map(|o| o.id).collect::<Vec<_>>().join(", ")
+        ));
+    }
+
+    install::install(parsed, |step| println!("  {step}"))?;
+    let tools = ffmpeg::find_tools(None)
+        .map_err(|_| "la instalación terminó pero ffmpeg sigue sin responder".to_string())?;
+    println!("Listo: {}", ffmpeg::version(&tools));
     Ok(())
 }
 

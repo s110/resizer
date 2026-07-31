@@ -11,8 +11,8 @@ use serde::Serialize;
 use tiny_http::{Header, Method, Request, Response, Server};
 
 use crate::ffmpeg::{self, Tools};
-use crate::jobs;
 use crate::plan::{MediaInfo, Settings};
+use crate::{install, jobs, NoWindow};
 
 const UI_HTML: &str = include_str!("ui.html");
 /// Cap browser uploads (the site itself refuses anything over 200 MB anyway,
@@ -54,7 +54,10 @@ struct AppState {
 }
 
 struct Ctx {
-    tools: Tools,
+    /// None until ffmpeg is installed; the setup screen fills this in.
+    tools: Mutex<Option<Tools>>,
+    /// Progress log of an in-flight ffmpeg installation.
+    setup: Mutex<SetupState>,
     state: Mutex<AppState>,
     scratch: PathBuf,
     next_id: AtomicU64,
@@ -77,6 +80,15 @@ fn gen_token() -> String {
     let mut h2 = RandomState::new().build_hasher();
     h2.write_u64(std::process::id() as u64);
     format!("{:016x}{:016x}", h1.finish(), h2.finish())
+}
+
+/// State of the "install ffmpeg" flow shown when ffmpeg is missing.
+#[derive(Default, Serialize)]
+struct SetupState {
+    installing: bool,
+    /// Human-readable progress steps, newest last.
+    steps: Vec<String>,
+    error: Option<String>,
 }
 
 fn json_response(status: u32, body: String) -> Response<std::io::Cursor<Vec<u8>>> {
@@ -105,17 +117,25 @@ pub fn default_out_dir() -> PathBuf {
     home.join("resizer-output")
 }
 
+/// Print a line, tolerating a closed or absent stdout (see `run`).
+fn say(line: &str) {
+    use std::io::Write;
+    let mut out = std::io::stdout();
+    let _ = writeln!(out, "{line}");
+    let _ = out.flush();
+}
+
+/// Ask the OS to open a file, folder, or URL with its default handler.
+pub fn open_path(path: &Path) {
+    open_in_os(path)
+}
+
 fn open_in_os(path: &Path) {
+    // On Windows use the shell's own opener without going through `cmd`,
+    // which would allocate a console window — the very thing this program
+    // must never do. `explorer` handles files, folders and URLs alike.
     let (cmd, args): (&str, Vec<String>) = if cfg!(target_os = "windows") {
-        (
-            "cmd",
-            vec![
-                "/C".into(),
-                "start".into(),
-                "".into(),
-                path.display().to_string(),
-            ],
-        )
+        ("explorer", vec![path.display().to_string()])
     } else if cfg!(target_os = "macos") {
         ("open", vec![path.display().to_string()])
     } else {
@@ -123,8 +143,10 @@ fn open_in_os(path: &Path) {
     };
     let _ = std::process::Command::new(cmd)
         .args(args)
+        .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
+        .no_window()
         .spawn();
 }
 
@@ -150,7 +172,8 @@ fn content_type_for(path: &Path) -> &'static str {
 }
 
 /// Run the GUI server; blocks forever. Prints the URL and opens the browser.
-pub fn run(tools: Tools, port: u16, no_browser: bool) -> Result<(), String> {
+/// `tools` may be None: the interface then shows the ffmpeg setup screen.
+pub fn run(tools: Option<Tools>, port: u16, no_browser: bool) -> Result<(), String> {
     let scratch = std::env::temp_dir().join(format!("resizer-gui-{}", std::process::id()));
     std::fs::create_dir_all(&scratch).map_err(|e| format!("scratch dir: {e}"))?;
 
@@ -162,14 +185,21 @@ pub fn run(tools: Tools, port: u16, no_browser: bool) -> Result<(), String> {
         _ => port,
     };
     let url = format!("http://127.0.0.1:{actual}");
-    println!("resizer GUI: {url}");
-    println!("({})", ffmpeg::version(&tools));
+    // Never `println!` here: when this runs as a double-clicked GUI (or under
+    // a launcher that closes the pipe) writing to stdout can fail, and
+    // `println!` panics on failure — the app would die for printing a banner.
+    say(&format!("resizer GUI: {url}"));
+    match &tools {
+        Some(t) => say(&format!("({})", ffmpeg::version(t))),
+        None => say("(ffmpeg no encontrado — la interfaz ofrecerá instalarlo)"),
+    }
     if !no_browser {
         open_browser(&url);
     }
 
     let ctx = Arc::new(Ctx {
-        tools,
+        tools: Mutex::new(tools),
+        setup: Mutex::new(SetupState::default()),
         state: Mutex::new(AppState {
             entries: Vec::new(),
             settings: Settings::hover(),
@@ -245,6 +275,8 @@ fn handle(mut req: Request, ctx: &Arc<Ctx>) {
             return;
         }
         (Method::Get, "/api/state") => api_state(ctx),
+        (Method::Get, "/api/ffmpeg/options") => api_ffmpeg_options(ctx),
+        (Method::Post, "/api/ffmpeg/install") => api_ffmpeg_install(&mut req, ctx),
         (Method::Post, "/api/upload") => api_upload(&mut req, ctx),
         (Method::Post, "/api/folder") => api_folder(&mut req, ctx),
         (Method::Post, "/api/settings") => api_settings(&mut req, ctx),
@@ -275,15 +307,84 @@ fn read_json_body(req: &mut Request) -> Result<serde_json::Value, String> {
     serde_json::from_slice(&buf).map_err(|e| format!("bad json: {e}"))
 }
 
+/// Snapshot of the ffmpeg tools, or None when it still isn't installed.
+fn tools_of(ctx: &Ctx) -> Option<Tools> {
+    ctx.tools.lock().unwrap().clone()
+}
+
+const NEED_FFMPEG: &str = "ffmpeg todavía no está instalado.";
+
 fn api_state(ctx: &Arc<Ctx>) -> Response<std::io::Cursor<Vec<u8>>> {
     let st = ctx.state.lock().unwrap();
+    let setup = ctx.setup.lock().unwrap();
     ok_json(&serde_json::json!({
         "entries": st.entries,
         "settings": st.settings,
         "out_dir": st.out_dir.display().to_string(),
         "jobs": st.jobs,
         "converting": st.converting,
+        "ffmpeg_ready": ctx.tools.lock().unwrap().is_some(),
+        "setup": {
+            "installing": setup.installing,
+            "steps": setup.steps,
+            "error": setup.error,
+        },
     }))
+}
+
+/// The install options for this machine, so the user can choose before
+/// anything is downloaded or a package manager is invoked.
+fn api_ffmpeg_options(ctx: &Arc<Ctx>) -> Response<std::io::Cursor<Vec<u8>>> {
+    ok_json(&serde_json::json!({
+        "ready": ctx.tools.lock().unwrap().is_some(),
+        "options": install::options(),
+        "os": std::env::consts::OS,
+    }))
+}
+
+/// Kick off an installation in the background; progress shows up in
+/// /api/state so the page can poll it like everything else.
+fn api_ffmpeg_install(req: &mut Request, ctx: &Arc<Ctx>) -> Response<std::io::Cursor<Vec<u8>>> {
+    let body = match read_json_body(req) {
+        Ok(b) => b,
+        Err(e) => return err_json(400, &e),
+    };
+    let Some(method) = body["method"].as_str().and_then(install::Method::from_id) else {
+        return err_json(400, "No reconozco esa forma de instalación.");
+    };
+    {
+        let mut setup = ctx.setup.lock().unwrap();
+        if setup.installing {
+            return err_json(409, "Ya hay una instalación en curso.");
+        }
+        setup.installing = true;
+        setup.error = None;
+        setup.steps = vec!["Preparando…".to_string()];
+    }
+
+    let ctx2 = Arc::clone(ctx);
+    std::thread::spawn(move || {
+        let result = install::install(method, |step| {
+            ctx2.setup.lock().unwrap().steps.push(step.to_string());
+        });
+        let mut setup = ctx2.setup.lock().unwrap();
+        match result.and_then(|_| {
+            ffmpeg::find_tools(None).map_err(|_| {
+                "La instalación terminó pero ffmpeg sigue sin responder. \
+                 Prueba con otra forma de instalación."
+                    .to_string()
+            })
+        }) {
+            Ok(tools) => {
+                setup.steps.push("¡Listo! ffmpeg está funcionando.".into());
+                *ctx2.tools.lock().unwrap() = Some(tools);
+            }
+            Err(e) => setup.error = Some(e),
+        }
+        setup.installing = false;
+    });
+
+    ok_json(&serde_json::json!({ "started": true }))
 }
 
 fn api_upload(req: &mut Request, ctx: &Arc<Ctx>) -> Response<std::io::Cursor<Vec<u8>>> {
@@ -330,7 +431,11 @@ fn api_upload(req: &mut Request, ctx: &Arc<Ctx>) -> Response<std::io::Cursor<Vec
         }
     }
 
-    match ffmpeg::probe(&ctx.tools, &tmp) {
+    let Some(tools) = tools_of(ctx) else {
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+        return err_json(503, NEED_FFMPEG);
+    };
+    match ffmpeg::probe(&tools, &tmp) {
         Ok(info) => {
             let size = std::fs::metadata(&tmp).map(|m| m.len()).unwrap_or(0);
             let entry = Entry {
@@ -362,6 +467,9 @@ fn api_folder(req: &mut Request, ctx: &Arc<Ctx>) -> Response<std::io::Cursor<Vec
         Ok(b) => b,
         Err(e) => return err_json(400, &e),
     };
+    let Some(tools) = tools_of(ctx) else {
+        return err_json(503, NEED_FFMPEG);
+    };
     let dir = PathBuf::from(body["path"].as_str().unwrap_or(""));
     let recursive = body["recursive"].as_bool().unwrap_or(false);
     if !dir.is_dir() {
@@ -378,7 +486,7 @@ fn api_folder(req: &mut Request, ctx: &Arc<Ctx>) -> Response<std::io::Cursor<Vec
     }
     let mut added = 0;
     for f in found {
-        let info = match ffmpeg::probe(&ctx.tools, &f) {
+        let info = match ffmpeg::probe(&tools, &f) {
             Ok(i) => i,
             Err(_) => continue,
         };
@@ -434,6 +542,9 @@ fn api_settings(req: &mut Request, ctx: &Arc<Ctx>) -> Response<std::io::Cursor<V
 }
 
 fn api_preview(req: &mut Request, ctx: &Arc<Ctx>) -> Response<std::io::Cursor<Vec<u8>>> {
+    let Some(tools) = tools_of(ctx) else {
+        return err_json(503, NEED_FFMPEG);
+    };
     let body = match read_json_body(req) {
         Ok(b) => b,
         Err(e) => return err_json(400, &e),
@@ -446,7 +557,7 @@ fn api_preview(req: &mut Request, ctx: &Arc<Ctx>) -> Response<std::io::Cursor<Ve
         };
         (e.path.clone(), e.info.clone(), st.settings.clone())
     };
-    match jobs::make_preview(&ctx.tools, &path, &info, &settings, &ctx.scratch, id) {
+    match jobs::make_preview(&tools, &path, &info, &settings, &ctx.scratch, id) {
         Ok((out, est)) => {
             let plan = crate::plan::plan_video(&info, &settings);
             ok_json(&serde_json::json!({
@@ -461,6 +572,9 @@ fn api_preview(req: &mut Request, ctx: &Arc<Ctx>) -> Response<std::io::Cursor<Ve
 }
 
 fn api_convert(ctx: &Arc<Ctx>) -> Response<std::io::Cursor<Vec<u8>>> {
+    let Some(tools) = tools_of(ctx) else {
+        return err_json(503, NEED_FFMPEG);
+    };
     {
         let mut st = ctx.state.lock().unwrap();
         if st.converting {
@@ -495,7 +609,7 @@ fn api_convert(ctx: &Arc<Ctx>) -> Response<std::io::Cursor<Vec<u8>>> {
         let ids: Vec<u64> = ids_paths.iter().map(|(id, _)| *id).collect();
 
         jobs::run_bulk(
-            &ctx2.tools,
+            &tools,
             inputs,
             &out_dir,
             &settings,
