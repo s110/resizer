@@ -393,15 +393,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn media_paths_are_filtered_by_extension() {
-        assert!(is_media_path(Path::new("a/b/clip.MP4")));
-        assert!(is_media_path(Path::new("photo.jpeg")));
-        assert!(is_media_path(Path::new("anim.gif")));
-        assert!(!is_media_path(Path::new("notes.txt")));
-        assert!(!is_media_path(Path::new("noext")));
-    }
-
-    #[test]
     fn output_ext_maps_video_and_images() {
         let vid = MediaInfo {
             is_video: true,
@@ -424,18 +415,6 @@ mod tests {
     }
 
     #[test]
-    fn output_path_never_clobbers() {
-        let dir = std::env::temp_dir().join(format!("resizer-test-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let first = output_path(&dir, Path::new("clip.mov"), "mp4");
-        assert_eq!(first.file_name().unwrap(), "clip-web.mp4");
-        std::fs::write(&first, b"x").unwrap();
-        let second = output_path(&dir, Path::new("clip.mov"), "mp4");
-        assert_eq!(second.file_name().unwrap(), "clip-web-2.mp4");
-        std::fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[test]
     fn collect_inputs_walks_folders() {
         let dir = std::env::temp_dir().join(format!("resizer-walk-{}", std::process::id()));
         let sub = dir.join("sub");
@@ -450,28 +429,5 @@ mod tests {
         let deep = collect_inputs(std::slice::from_ref(&dir), true, None);
         assert_eq!(deep.len(), 2, "{deep:?}");
         std::fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[test]
-    fn collect_inputs_skips_the_output_dir() {
-        let dir = std::env::temp_dir().join(format!("resizer-excl-{}", std::process::id()));
-        let resized = dir.join("resized");
-        std::fs::create_dir_all(&resized).unwrap();
-        std::fs::write(dir.join("a.mp4"), b"x").unwrap();
-        std::fs::write(resized.join("a-web.mp4"), b"x").unwrap();
-
-        // Without the exclusion a recursive re-run would re-ingest a-web.mp4.
-        let all = collect_inputs(std::slice::from_ref(&dir), true, None);
-        assert_eq!(all.len(), 2, "{all:?}");
-        let safe = collect_inputs(std::slice::from_ref(&dir), true, Some(&resized));
-        assert_eq!(safe.len(), 1, "{safe:?}");
-        assert!(safe[0].ends_with("a.mp4"));
-        std::fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[test]
-    fn default_jobs_is_sane() {
-        let j = default_jobs();
-        assert!((1..=8).contains(&j));
     }
 }

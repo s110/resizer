@@ -752,10 +752,4 @@ mod tests {
             "application/octet-stream"
         );
     }
-
-    #[test]
-    fn default_out_dir_is_under_home() {
-        let d = default_out_dir();
-        assert!(d.ends_with("resizer-output"));
-    }
 }

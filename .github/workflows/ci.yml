@@ -48,7 +48,18 @@ jobs:
         if: runner.os == 'Windows'
         run: choco install ffmpeg -y --no-progress
 
+      # Includes the shoot-folder E2E (tests/e2e_shoot_batch.rs); with CI set,
+      # a missing ffmpeg fails the run instead of skipping it.
       - run: cargo test --all-targets
+
+      - name: Upload E2E artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-${{ matrix.os }}
+          path: artifacts/e2e/
+          if-no-files-found: warn
+
       - run: cargo build --release
 
   ui:
