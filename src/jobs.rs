@@ -268,6 +268,9 @@ fn convert_image(
         .extension()
         .map(|e| e.eq_ignore_ascii_case("webp"))
         .unwrap_or(false);
+    if is_webp && !ffmpeg::has_encoder(tools, "libwebp") {
+        return Err(ffmpeg::NO_WEBP_ENCODER.into());
+    }
 
     let is_png = output
         .extension()

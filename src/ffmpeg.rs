@@ -1,9 +1,11 @@
 //! Thin wrapper around the ffmpeg / ffprobe executables: locate them, probe
 //! sources, build argument lists, and run encodes while reporting progress.
 
+use std::collections::HashMap;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::{Mutex, OnceLock};
 
 use crate::install;
 use crate::plan::{EncodePlan, MediaInfo, RateControl};
@@ -111,6 +113,40 @@ pub fn version(tools: &Tools) -> String {
         .and_then(|o| String::from_utf8(o.stdout).ok())
         .and_then(|s| s.lines().next().map(str::to_string))
         .unwrap_or_else(|| "unknown".into())
+}
+
+/// Shown instead of ffmpeg's "Unknown encoder 'libwebp'" when WebP output is
+/// asked for but this ffmpeg build cannot write it (Homebrew's ffmpeg, for one).
+pub const NO_WEBP_ENCODER: &str = "this ffmpeg build cannot write WebP (it has no libwebp \
+encoder): choose jpg or png output, or install an ffmpeg build that includes libwebp";
+
+/// True when this ffmpeg build has an encoder with exactly this name. Cached
+/// per ffmpeg executable, since a batch asks once per file. If ffmpeg cannot
+/// be asked, report true and let the encode itself surface the problem.
+pub fn has_encoder(tools: &Tools, name: &str) -> bool {
+    static CACHE: OnceLock<Mutex<HashMap<(PathBuf, String), bool>>> = OnceLock::new();
+    let key = (tools.ffmpeg.clone(), name.to_string());
+    let cache = CACHE.get_or_init(Default::default);
+    if let Some(&known) = cache.lock().expect("encoder cache").get(&key) {
+        return known;
+    }
+    let found = Command::new(&tools.ffmpeg)
+        .args(["-hide_banner", "-encoders"])
+        .stdin(Stdio::null())
+        .no_window()
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| {
+            // Lines look like " V....D libwebp   libwebp WebP image": match the
+            // name column exactly so "libwebp_anim" does not count as "libwebp".
+            String::from_utf8_lossy(&o.stdout)
+                .lines()
+                .any(|l| l.split_whitespace().nth(1) == Some(name))
+        })
+        .unwrap_or(true);
+    cache.lock().expect("encoder cache").insert(key, found);
+    found
 }
 
 /// Probe a media file with ffprobe (JSON output).
