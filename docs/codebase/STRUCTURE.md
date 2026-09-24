@@ -55,7 +55,7 @@ No hay `CLAUDE.md` ni otros documentos de intención en el repo.
 - Organización por capa/responsabilidad, no por feature (el proyecto es pequeño).
 - Sin path aliases ni re-exports; los binarios importan `resizer::{modulo}`.
 - Archivos de salida de conversión: `<stem>-web.<ext>` con sufijo `-2`, `-3`…
-  para no sobreescribir (`src/jobs.rs::output_path`).
+  para no sobreescribir (`src/jobs.rs::plan_output_names`).
 
 ## 5) Evidence
 

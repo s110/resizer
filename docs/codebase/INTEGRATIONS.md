@@ -22,7 +22,7 @@ y unas URLs de descarga de ffmpeg.
 |---------|-----|--------|--------------|-----------|
 | Data dir privado (`%LOCALAPPDATA%\resizer`, `~/Library/Application Support/resizer`, `$XDG_DATA_HOME/resizer`) | ffmpeg autoinstalado (`bin/`), descargas temporales, `resizer-error.log` | `src/install.rs::{data_dir, bin_dir}` | Bajo; nunca junto al ejecutable (funciona desde USB/Descargas) | `src/install.rs`, test `data_dir_is_private_and_not_next_to_the_exe` |
 | Scratch temporal (`$TMP/resizer-gui-<pid>`, `resizer-cli-<pid>`) | Uploads del navegador, previews, passlogs x264 | `src/server.rs::run`, `src/jobs.rs` | Acumulación: la GUI no borra su scratch al salir (ver CONCERNS) | `src/server.rs`, `src/jobs.rs` |
-| Carpeta de salida (`~/resizer-output` en GUI; `<carpeta>/resized` en CLI) | Resultados; nunca sobreescribe (`-web`, `-web-2`, …) | `jobs::output_path`, `server::default_out_dir` | Bajo | `src/jobs.rs`, `src/server.rs` |
+| Carpeta de salida (`~/resizer-output` en GUI; `<carpeta>/resized` en CLI) | Resultados; nunca sobreescribe (`-web`, `-web-2`, …, asignados antes de convertir) | `jobs::plan_output_names`, `server::default_out_dir` | Bajo | `src/jobs.rs`, `src/server.rs` |
 
 ## 3) Secrets and Credentials Handling
 

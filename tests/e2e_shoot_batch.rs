@@ -1,13 +1,16 @@
 //! End-to-end scenario: a real "shoot folder" goes through the hover preset
 //! twice, driving the real `resizer-cli` binary against real ffmpeg.
 //!
-//! The folder mixes everything a kamiru.art upload tends to contain: two
-//! clips with the same name (`IMG_0001.MOV` + an edited `IMG_0001.mp4`), a
-//! portrait phone video stored sideways with a rotation flag, a phone photo
-//! with EXIF orientation, a 16-bit PNG with transparency, an animated GIF
-//! with odd dimensions, an extreme panorama, a heavy photo in a subfolder,
-//! a corrupt file in the middle, plus a text file and a hidden file that must
-//! be ignored. The same command is then re-run on the same output folder.
+//! The folder mixes everything a kamiru.art upload tends to contain: three
+//! clips with the same name (`IMG_0001.MOV`, an edited `IMG_0001.mp4` and an
+//! `extra/img_0001.mov` that differs only in case, which is the same output
+//! name on macOS and Windows), a portrait phone video stored sideways with a
+//! rotation flag, phone photos stored with each of the eight EXIF
+//! orientations (JPEG, plus one PNG eXIf), a 16-bit PNG with transparency, an
+//! animated GIF with odd dimensions, an extreme panorama, a heavy photo in a
+//! subfolder, a corrupt file in the middle, plus a text file and a hidden
+//! file that must be ignored. The same command is then re-run on the same
+//! output folder.
 //!
 //! Every check is judged against independent references (ffprobe, decoded
 //! pixels, PSNR against a crop made straight from the source), never against
@@ -27,7 +30,23 @@ use sha2::{Digest, Sha256};
 const BUDGET_MB: &str = "0.5";
 const BUDGET_BYTES: u64 = 512 * 1024;
 /// Media files in the scenario (notes.txt and .hidden.jpg are not counted).
-const MEDIA_INPUTS: usize = 9;
+const MEDIA_INPUTS: usize = 18;
+
+/// Upright 600x800 photos stored transformed, tagged with the EXIF
+/// orientation that turns them upright again: (file, orientation, the ffmpeg
+/// filter that produces the stored pixels from the upright picture). Each
+/// stored filter is the inverse of what the orientation asks a viewer to do.
+/// `photo.jpg` (orientation 6) is built separately.
+const EXIF_CASES: &[(&str, u16, &str)] = &[
+    ("exif/o1.jpg", 1, "null"),
+    ("exif/o2.jpg", 2, "hflip"),
+    ("exif/o3.jpg", 3, "hflip,vflip"),
+    ("exif/o4.jpg", 4, "vflip"),
+    ("exif/o5.jpg", 5, "transpose=cclock_flip"),
+    ("exif/o7.jpg", 7, "transpose=clock_flip"),
+    ("exif/o8.jpg", 8, "transpose=clock"),
+    ("exif/png-o5.png", 5, "transpose=cclock_flip"),
+];
 
 fn bin() -> &'static str {
     env!("CARGO_BIN_EXE_resizer-cli")
@@ -211,10 +230,8 @@ fn garbage(len: usize) -> Vec<u8> {
         .collect()
 }
 
-/// Insert an EXIF APP1 segment with the given Orientation right after SOI.
-fn add_exif_orientation(jpeg: &Path, orientation: u16) {
-    let data = std::fs::read(jpeg).unwrap();
-    assert_eq!(&data[..2], &[0xFF, 0xD8], "not a JPEG");
+/// Little-endian TIFF block whose IFD0 holds only the Orientation tag.
+fn exif_tiff(orientation: u16) -> Vec<u8> {
     let mut tiff = b"II*\0".to_vec();
     tiff.extend(8u32.to_le_bytes()); // IFD0 offset
     tiff.extend(1u16.to_le_bytes()); // one entry
@@ -224,13 +241,79 @@ fn add_exif_orientation(jpeg: &Path, orientation: u16) {
     tiff.extend(orientation.to_le_bytes());
     tiff.extend(0u16.to_le_bytes()); // padding of the 4-byte value slot
     tiff.extend(0u32.to_le_bytes()); // no next IFD
+    tiff
+}
+
+/// Insert an EXIF APP1 segment with the given Orientation right after SOI.
+fn add_exif_orientation(jpeg: &Path, orientation: u16) {
+    let data = std::fs::read(jpeg).unwrap();
+    assert_eq!(&data[..2], &[0xFF, 0xD8], "not a JPEG");
     let mut app1 = b"Exif\0\0".to_vec();
-    app1.extend(tiff);
+    app1.extend(exif_tiff(orientation));
     let mut out = vec![0xFF, 0xD8, 0xFF, 0xE1];
     out.extend(((app1.len() + 2) as u16).to_be_bytes());
     out.extend(app1);
     out.extend(&data[2..]);
     std::fs::write(jpeg, out).unwrap();
+}
+
+/// CRC-32 (ISO-HDLC) as PNG chunks use it.
+fn crc32(bytes: &[u8]) -> u32 {
+    let mut crc = !0u32;
+    for &b in bytes {
+        crc ^= b as u32;
+        for _ in 0..8 {
+            crc = if crc & 1 == 1 {
+                (crc >> 1) ^ 0xEDB8_8320
+            } else {
+                crc >> 1
+            };
+        }
+    }
+    !crc
+}
+
+/// Insert an eXIf chunk with the given Orientation right after IHDR.
+fn add_png_exif_orientation(png: &Path, orientation: u16) {
+    let data = std::fs::read(png).unwrap();
+    assert_eq!(&data[12..16], b"IHDR", "not a PNG");
+    let ihdr_end = 8 + 12 + 13;
+    let body = exif_tiff(orientation);
+    let mut chunk = (body.len() as u32).to_be_bytes().to_vec();
+    let mut typed = b"eXIf".to_vec();
+    typed.extend(&body);
+    chunk.extend(&typed);
+    chunk.extend(crc32(&typed).to_be_bytes());
+    let mut out = data[..ihdr_end].to_vec();
+    out.extend(chunk);
+    out.extend(&data[ihdr_end..]);
+    std::fs::write(png, out).unwrap();
+}
+
+/// True when a decoder would still rotate or flip the image: a display
+/// matrix with a rotation, or an EXIF Orientation other than 1.
+fn orientation_left(path: &Path) -> bool {
+    let out = Command::new("ffprobe")
+        .args([
+            "-v",
+            "error",
+            "-print_format",
+            "json",
+            "-show_frames",
+            p(path),
+        ])
+        .output()
+        .expect("run ffprobe frames");
+    let v: Value = serde_json::from_slice(&out.stdout).unwrap_or(Value::Null);
+    let frame = &v["frames"][0];
+    let rotated = frame["side_data_list"].as_array().is_some_and(|sd| {
+        sd.iter()
+            .any(|d| d["rotation"].as_f64().is_some_and(|r| r != 0.0))
+    });
+    let tagged = frame["tags"]["Orientation"]
+        .as_str()
+        .is_some_and(|o| o.trim() != "1");
+    rotated || tagged
 }
 
 /// Build the shoot folder plus the independent reference frames.
@@ -241,8 +324,9 @@ fn build_inputs(shoot: &Path, refs: &Path) {
     let s = |name: &str| shoot.join(name);
     let r = |name: &str| refs.join(name);
 
-    // Same stem, two clips: the camera original and an edited export. The
-    // .MOV is the short one so the finishing order is stable.
+    // Same stem, three clips: the camera original, an edited export, and a
+    // copy in a subfolder whose name differs only in case. Sizes differ so
+    // each output can be traced to its source.
     ffmpeg(&[
         "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=30:duration=3",
         "-c:v", "libx264", "-pix_fmt", "yuv420p", p(&s("IMG_0001.MOV")),
@@ -252,6 +336,10 @@ fn build_inputs(shoot: &Path, refs: &Path) {
         "-f", "lavfi", "-i", "sine=frequency=440:duration=6",
         "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest",
         p(&s("IMG_0001.mp4")),
+    ]);
+    ffmpeg(&[
+        "-f", "lavfi", "-i", "testsrc2=size=480x480:rate=30:duration=2",
+        "-c:v", "libx264", "-pix_fmt", "yuv420p", p(&s("extra/img_0001.mov")),
     ]);
 
     // Portrait 60 fps phone video, stored sideways with a rotation flag.
@@ -298,6 +386,18 @@ fn build_inputs(shoot: &Path, refs: &Path) {
     ffmpeg(&[
         "-i", p(&r("photo-upright.png")), "-vf", "crop=600:750", p(&r("photo-ref.png")),
     ]);
+    // The same upright photo stored with every other EXIF orientation.
+    std::fs::create_dir_all(shoot.join("exif")).unwrap();
+    for (rel, orientation, stored) in EXIF_CASES {
+        let dst = s(rel);
+        if rel.ends_with(".png") {
+            ffmpeg(&["-i", p(&r("photo-upright.png")), "-vf", stored, p(&dst)]);
+            add_png_exif_orientation(&dst, *orientation);
+        } else {
+            ffmpeg(&["-i", p(&r("photo-upright.png")), "-vf", stored, "-q:v", "2", p(&dst)]);
+            add_exif_orientation(&dst, *orientation);
+        }
+    }
 
     // 16-bit RGBA logo, left half fully transparent.
     ffmpeg(&[
@@ -475,19 +575,24 @@ fn shoot_folder_hover_batch_twice() {
     let out_dir = shoot.join("resized");
 
     let mut inputs = BTreeMap::new();
+    let exif_rels = EXIF_CASES.iter().map(|(rel, _, _)| *rel);
     for rel in [
         "IMG_0001.MOV",
         "IMG_0001.mp4",
         "anim.gif",
         "broken.mp4",
         "extra/detail.jpg",
+        "extra/img_0001.mov",
         "logo.png",
         "pano.jpg",
         "phone.mp4",
         "photo.jpg",
         "notes.txt",
         ".hidden.jpg",
-    ] {
+    ]
+    .into_iter()
+    .chain(exif_rels)
+    {
         let path = shoot.join(rel);
         inputs.insert(
             rel.to_string(),
@@ -519,7 +624,7 @@ fn shoot_folder_hover_batch_twice() {
     );
     c.add(
         "run1.summary",
-        "9 media files picked up (subfolder included, .txt and hidden file ignored); 8 ok, 1 failed",
+        "18 media files picked up (subfolders included, .txt and hidden file ignored); 17 ok, 1 failed",
         run1.summary() == expected_summary,
         json!({"expected": expected_summary, "actual": run1.summary()}),
         None,
@@ -542,11 +647,11 @@ fn shoot_folder_hover_batch_twice() {
     );
     c.add(
         "run1.one_output_per_success",
-        "every input reported ok has its own output file (IMG_0001.MOV and IMG_0001.mp4 must not overwrite each other)",
+        "every input reported ok has its own output file (IMG_0001.MOV, IMG_0001.mp4 and extra/img_0001.mov converted in parallel must not overwrite each other, also on case-insensitive file systems)",
         snap1.len() == ok_count,
         json!({"expected": ok_count, "actual": snap1.len(),
-               "img_0001_outputs": names1.iter().filter(|k| k.starts_with("IMG_0001")).collect::<Vec<_>>()}),
-        Some("BUG-1: parallel jobs with the same stem pick the same output name and clobber each other"),
+               "img_0001_outputs": names1.iter().filter(|k| k.to_lowercase().starts_with("img_0001")).collect::<Vec<_>>()}),
+        None,
     );
 
     let over: Vec<&String> = snap1
@@ -596,19 +701,34 @@ fn shoot_folder_hover_batch_twice() {
         None,
     );
 
-    // Phone photo with EXIF orientation: should be treated like the video.
-    let photo = out_dir.join("photo-web.jpg");
-    let (pw, ph) = dims(&video_stream(&ffprobe(&photo)));
-    let photo_psnr = psnr_first_frame(&photo, &refs.join("photo-ref.png"), 600, 750);
-    c.add(
-        "run1.photo_exif_orientation",
-        "EXIF-rotated photo comes out 600x750, the upright full-width 4:5 crop (PSNR >= 30 dB)",
-        (pw, ph) == (600, 750) && photo_psnr >= 30.0,
-        json!({"expected_dims": [600, 750], "dims": [pw, ph], "psnr_db": photo_psnr}),
-        Some(
-            "BUG-2: probe ignores EXIF orientation, so the plan uses stored (sideways) dimensions",
-        ),
+    // Phone photos with EXIF orientation: should be treated like the video.
+    // Every orientation must land on the same upright crop, and the output
+    // must not ask viewers to rotate it again.
+    let photos = std::iter::once(("photo.jpg", 6u16)).chain(
+        EXIF_CASES
+            .iter()
+            .map(|(rel, orientation, _)| (rel.trim_start_matches("exif/"), *orientation)),
     );
+    for (file, orientation) in photos {
+        let (stem, ext) = file.rsplit_once('.').unwrap();
+        let photo = out_dir.join(format!("{stem}-web.{ext}"));
+        let (pw, ph) = dims(&video_stream(&ffprobe(&photo)));
+        let photo_psnr = psnr_first_frame(&photo, &refs.join("photo-ref.png"), 600, 750);
+        let left = orientation_left(&photo);
+        let id = if stem == "photo" {
+            "run1.photo_exif_orientation".to_string()
+        } else {
+            format!("run1.exif_orientation.{stem}")
+        };
+        c.add(
+            &id,
+            "photo stored with an EXIF orientation comes out 600x750, the upright full-width 4:5 crop (PSNR >= 30 dB), with no orientation left for viewers to apply again",
+            (pw, ph) == (600, 750) && photo_psnr >= 30.0 && !left,
+            json!({"orientation": orientation, "expected_dims": [600, 750], "dims": [pw, ph],
+                   "psnr_at_least_30db": photo_psnr >= 30.0, "orientation_left": left}),
+            None,
+        );
+    }
 
     // 16-bit transparent logo: alpha survives the crop and re-encode.
     let logo = out_dir.join("logo-web.png");
@@ -682,7 +802,7 @@ fn shoot_folder_hover_batch_twice() {
 
     c.add(
         "run2.no_reingest",
-        "re-run with --recursive picks up the same 9 inputs (resized/ is not re-ingested)",
+        "re-run with --recursive picks up the same 18 inputs (resized/ is not re-ingested)",
         run2.exit_code == 1 && run2.summary() == expected_summary,
         json!({"exit_code": run2.exit_code, "expected": expected_summary, "actual": run2.summary()}),
         None,

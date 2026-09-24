@@ -126,7 +126,12 @@ pub struct MediaInfo {
     pub width: u32,
     pub height: u32,
     /// Display rotation in degrees (from the container's display matrix).
+    /// Videos: ffmpeg applies it while decoding.
     pub rotation: i32,
+    /// Images: EXIF-style orientation 1..=8 (1 = upright) that the encode
+    /// applies itself (see `orientation_filter`); images are decoded with
+    /// ffmpeg's autorotation off. Unused for videos.
+    pub orientation: u8,
     pub duration_s: f64,
     pub fps: f64,
     pub has_audio: bool,
@@ -137,7 +142,12 @@ pub struct MediaInfo {
 impl MediaInfo {
     /// Width/height as displayed (i.e. after rotation is applied).
     pub fn display_dims(&self) -> (u32, u32) {
-        if self.rotation.rem_euclid(180) == 90 {
+        let quarter_turn = if self.is_video {
+            self.rotation.rem_euclid(180) == 90
+        } else {
+            (5..=8).contains(&self.orientation)
+        };
+        if quarter_turn {
             (self.height, self.width)
         } else {
             (self.width, self.height)
@@ -168,6 +178,22 @@ pub struct EncodePlan {
     pub rate: RateControl,
     /// AAC audio bitrate in kbit/s; None = strip audio (or no audio track).
     pub audio_kbps: Option<u32>,
+    /// Filter that turns a stored image upright, applied before the crop.
+    pub orient: Option<&'static str>,
+}
+
+/// The ffmpeg filter that displays an image stored with EXIF orientation `o`.
+pub fn orientation_filter(o: u8) -> Option<&'static str> {
+    match o {
+        2 => Some("hflip"),
+        3 => Some("hflip,vflip"),
+        4 => Some("vflip"),
+        5 => Some("transpose=cclock_flip"), // transpose (main diagonal)
+        6 => Some("transpose=clock"),
+        7 => Some("transpose=clock_flip"), // transverse (anti-diagonal)
+        8 => Some("transpose=cclock"),
+        _ => None,
+    }
 }
 
 /// Below ~this many bits per pixel per frame, x264 output turns to mush;
@@ -290,13 +316,21 @@ pub fn plan_video(info: &MediaInfo, s: &Settings) -> EncodePlan {
         fps,
         rate,
         audio_kbps: keep_audio.then_some(AUDIO_KBPS),
+        orient: if info.is_video {
+            None
+        } else {
+            orientation_filter(info.orientation)
+        },
     }
 }
 
-/// The ffmpeg `-vf` filter chain for a plan. Crop first (in source display
-/// pixels), then scale to the exact output size.
+/// The ffmpeg `-vf` filter chain for a plan. Orientation first, then the crop
+/// (in source display pixels), then scale to the exact output size.
 pub fn filter_chain(plan: &EncodePlan) -> String {
     let mut parts = Vec::new();
+    if let Some(orient) = plan.orient {
+        parts.push(orient.to_string());
+    }
     if let Some((cw, ch)) = plan.crop {
         parts.push(format!("crop={cw}:{ch}"));
     }
@@ -331,6 +365,7 @@ mod tests {
             width: w,
             height: h,
             rotation: 0,
+            orientation: 1,
             duration_s: dur,
             fps: 30.0,
             has_audio: true,

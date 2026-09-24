@@ -6,8 +6,21 @@ ffmpeg: recorta al formato del sitio (las tarjetas *hover* 4:5, cuadrado 1:1 o
 Los archivos originales **nunca se modifican**.
 
 Funciona en Windows, Linux y macOS (Apple Silicon). Es un wrapper de ffmpeg:
-solo usa las funciones básicas (libx264 + escalado), así que cualquier build
-"essentials" de ffmpeg sirve.
+los videos y las fotos en jpg o png solo necesitan libx264 y los filtros
+básicos de escalado y recorte.
+
+La salida **webp** necesita además el encoder `libwebp`, y no todos los builds
+de ffmpeg lo traen: el de Homebrew (el que instala `--method homebrew` en
+macOS), por ejemplo, no lo incluye. Afecta a `--image-format webp` y también a
+las fotos `.webp` cuando se conserva su formato. Para comprobar tu ffmpeg:
+
+```bash
+ffmpeg -hide_banner -encoders | grep libwebp
+```
+
+Si no aparece nada, elige jpg o png, o instala un build de ffmpeg que incluya
+libwebp. Sin él, resizer marca esas fotos como fallidas con un mensaje que lo
+explica, en vez del error de ffmpeg.
 
 ## Instalación
 
@@ -72,7 +85,7 @@ resizer-cli convert ./media --recursive --max-mb 6 --max-height 720
 # Solo comprimir sin recortar, calidad fija:
 resizer-cli convert clip.mov --preset original --crf 22 --keep-audio
 
-# Fotos a webp de máximo 300 KB:
+# Fotos a webp de máximo 300 KB (necesita un ffmpeg con libwebp, ver arriba):
 resizer-cli convert ./fotos --image-format webp --max-mb 0.3
 
 # Ver qué detecta ffprobe en un archivo:

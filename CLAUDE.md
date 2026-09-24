@@ -26,7 +26,9 @@ cargo test --test e2e_shoot_batch
 - **Escenario**: una carpeta de sesión real pasa por `resizer-cli convert
   --preset hover --max-mb 0.5 --recursive --jobs 3` dos veces sobre la misma
   salida. Mezcla `IMG_0001.MOV` + `IMG_0001.mp4` (mismo nombre), video de
-  móvil rotado a 60 fps, foto con orientación EXIF 6, PNG RGBA de 16 bits,
+  móvil rotado a 60 fps, fotos con cada orientación EXIF (JPEG y PNG),
+  `extra/img_0001.mov` (colisión triple que solo difiere en mayúsculas), PNG
+  RGBA de 16 bits,
   GIF animado de tamaño impar, panorámica 4000x90, foto pesada en subcarpeta,
   un mp4 corrupto en medio, un `.txt` y un archivo oculto. Se juzga con
   ffprobe, píxeles decodificados y PSNR contra recortes hechos desde la
@@ -35,10 +37,9 @@ cargo test --test e2e_shoot_batch
   hashes de entradas, propiedades de cada salida, hash de píxeles de las
   salidas bit-exactas y un veredicto por check.
 - **Cómo verificarlo**: `"result": "pass"` y ningún check en `fail` ni
-  `unexpected_pass`. Los checks `known_failing` documentan bugs abiertos
-  (BUG-1 nombres repetidos se pisan en paralelo, BUG-2 orientación EXIF
-  ignorada); si uno empieza a pasar el test falla para quitar la marca junto
-  con el arreglo. Repetible: dos corridas en la misma máquina dan el mismo
+  `unexpected_pass`. Un check `known_failing` documenta un bug abierto (hoy
+  no hay ninguno); si uno empieza a pasar el test falla para quitar la marca
+  junto con el arreglo. Repetible: dos corridas en la misma máquina dan el mismo
   archivo (`shasum artifacts/e2e/shoot_batch.json`). Los videos solo guardan
   propiedades estables porque x264 en dos pasadas con VBV y varios hilos no es
   bit-exacto.
