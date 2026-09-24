@@ -1,9 +1,10 @@
 //! End-to-end scenario: a real "shoot folder" goes through the hover preset
 //! twice, driving the real `resizer-cli` binary against real ffmpeg.
 //!
-//! The folder mixes everything a kamiru.art upload tends to contain: two
-//! clips with the same name (`IMG_0001.MOV` + an edited `IMG_0001.mp4`), a
-//! portrait phone video stored sideways with a rotation flag, a phone photo
+//! The folder mixes everything a kamiru.art upload tends to contain: three
+//! clips with the same name (`IMG_0001.MOV`, an edited `IMG_0001.mp4` and an
+//! `extra/img_0001.mov` that differs only in case, which is the same output
+//! name on macOS and Windows), a portrait phone video stored sideways with a rotation flag, a phone photo
 //! with EXIF orientation, a 16-bit PNG with transparency, an animated GIF
 //! with odd dimensions, an extreme panorama, a heavy photo in a subfolder,
 //! a corrupt file in the middle, plus a text file and a hidden file that must
@@ -27,7 +28,7 @@ use sha2::{Digest, Sha256};
 const BUDGET_MB: &str = "0.5";
 const BUDGET_BYTES: u64 = 512 * 1024;
 /// Media files in the scenario (notes.txt and .hidden.jpg are not counted).
-const MEDIA_INPUTS: usize = 9;
+const MEDIA_INPUTS: usize = 10;
 
 fn bin() -> &'static str {
     env!("CARGO_BIN_EXE_resizer-cli")
@@ -241,8 +242,9 @@ fn build_inputs(shoot: &Path, refs: &Path) {
     let s = |name: &str| shoot.join(name);
     let r = |name: &str| refs.join(name);
 
-    // Same stem, two clips: the camera original and an edited export. The
-    // .MOV is the short one so the finishing order is stable.
+    // Same stem, three clips: the camera original, an edited export, and a
+    // copy in a subfolder whose name differs only in case. Sizes differ so
+    // each output can be traced to its source.
     ffmpeg(&[
         "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=30:duration=3",
         "-c:v", "libx264", "-pix_fmt", "yuv420p", p(&s("IMG_0001.MOV")),
@@ -252,6 +254,10 @@ fn build_inputs(shoot: &Path, refs: &Path) {
         "-f", "lavfi", "-i", "sine=frequency=440:duration=6",
         "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest",
         p(&s("IMG_0001.mp4")),
+    ]);
+    ffmpeg(&[
+        "-f", "lavfi", "-i", "testsrc2=size=480x480:rate=30:duration=2",
+        "-c:v", "libx264", "-pix_fmt", "yuv420p", p(&s("extra/img_0001.mov")),
     ]);
 
     // Portrait 60 fps phone video, stored sideways with a rotation flag.
@@ -481,6 +487,7 @@ fn shoot_folder_hover_batch_twice() {
         "anim.gif",
         "broken.mp4",
         "extra/detail.jpg",
+        "extra/img_0001.mov",
         "logo.png",
         "pano.jpg",
         "phone.mp4",
@@ -519,7 +526,7 @@ fn shoot_folder_hover_batch_twice() {
     );
     c.add(
         "run1.summary",
-        "9 media files picked up (subfolder included, .txt and hidden file ignored); 8 ok, 1 failed",
+        "10 media files picked up (subfolders included, .txt and hidden file ignored); 9 ok, 1 failed",
         run1.summary() == expected_summary,
         json!({"expected": expected_summary, "actual": run1.summary()}),
         None,
@@ -542,11 +549,11 @@ fn shoot_folder_hover_batch_twice() {
     );
     c.add(
         "run1.one_output_per_success",
-        "every input reported ok has its own output file (IMG_0001.MOV and IMG_0001.mp4 must not overwrite each other)",
+        "every input reported ok has its own output file (IMG_0001.MOV, IMG_0001.mp4 and extra/img_0001.mov converted in parallel must not overwrite each other, also on case-insensitive file systems)",
         snap1.len() == ok_count,
         json!({"expected": ok_count, "actual": snap1.len(),
-               "img_0001_outputs": names1.iter().filter(|k| k.starts_with("IMG_0001")).collect::<Vec<_>>()}),
-        Some("BUG-1: parallel jobs with the same stem pick the same output name and clobber each other"),
+               "img_0001_outputs": names1.iter().filter(|k| k.to_lowercase().starts_with("img_0001")).collect::<Vec<_>>()}),
+        None,
     );
 
     let over: Vec<&String> = snap1
@@ -682,7 +689,7 @@ fn shoot_folder_hover_batch_twice() {
 
     c.add(
         "run2.no_reingest",
-        "re-run with --recursive picks up the same 9 inputs (resized/ is not re-ingested)",
+        "re-run with --recursive picks up the same 10 inputs (resized/ is not re-ingested)",
         run2.exit_code == 1 && run2.summary() == expected_summary,
         json!({"exit_code": run2.exit_code, "expected": expected_summary, "actual": run2.summary()}),
         None,

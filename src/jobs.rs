@@ -1,6 +1,7 @@
 //! The conversion pipeline for one file, plus a multi-threaded queue that
 //! drives many files in parallel (each worker owns one ffmpeg process).
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
@@ -98,20 +99,65 @@ pub fn output_ext(input: &Path, info: &MediaInfo, s: &Settings) -> String {
     }
 }
 
-/// Build a non-clobbering output path: `<out_dir>/<stem>-web.<ext>`,
-/// adding `-2`, `-3`, ... if that name is taken.
-pub fn output_path(out_dir: &Path, input: &Path, ext: &str) -> PathBuf {
-    let stem = input
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("media");
-    let mut candidate = out_dir.join(format!("{stem}-web.{ext}"));
-    let mut n = 2;
-    while candidate.exists() {
-        candidate = out_dir.join(format!("{stem}-web-{n}.{ext}"));
-        n += 1;
-    }
-    candidate
+/// Name every output of a batch before any conversion starts, in input
+/// order: `<stem>-web`, then `<stem>-web-2`, `-3`, ... for later inputs with
+/// the same stem. Planning up front keeps names independent of which worker
+/// finishes first, so the same batch always maps inputs to the same names.
+///
+/// A name counts as taken if a file in `out_dir` already has it, whatever its
+/// extension (the extension is only known after probing), so a re-run never
+/// overwrites earlier results. Names are compared case-insensitively because
+/// macOS and Windows file systems are: `IMG_0001.MOV` and `img_0001.mov`
+/// would otherwise land on the same file there. Returned as bare names
+/// without an extension; `convert_file` adds it and claims the file.
+pub fn plan_output_names(out_dir: &Path, inputs: &[PathBuf]) -> Vec<String> {
+    let mut taken: HashSet<String> = std::fs::read_dir(out_dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| {
+            let name = e.file_name().to_string_lossy().to_lowercase();
+            match name.rsplit_once('.') {
+                Some((base, _)) => base.to_string(),
+                None => name,
+            }
+        })
+        .collect();
+    inputs
+        .iter()
+        .map(|input| {
+            let stem = input
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("media");
+            (1..)
+                .map(|n| match n {
+                    1 => format!("{stem}-web"),
+                    n => format!("{stem}-web-{n}"),
+                })
+                .find(|name| taken.insert(name.to_lowercase()))
+                .expect("some suffix is always free")
+        })
+        .collect()
+}
+
+/// Create `path` only if nothing is there yet. The batch plan already steers
+/// clear of known names; this catches what it cannot see (another resizer
+/// writing to the same folder, names a file system folds together beyond
+/// letter case) and fails loudly instead of overwriting.
+fn claim_output(path: &Path) -> Result<(), String> {
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .map(|_| ())
+        .map_err(|e| match e.kind() {
+            std::io::ErrorKind::AlreadyExists => format!(
+                "{} already exists; refusing to overwrite it",
+                path.display()
+            ),
+            _ => format!("cannot create {}: {e}", path.display()),
+        })
 }
 
 static PASSLOG_SEQ: AtomicU64 = AtomicU64::new(0);
@@ -141,11 +187,13 @@ pub struct ConvertOutcome {
     pub out_bytes: u64,
 }
 
-/// Convert one file. `on_progress` receives 0.0..=1.0 across all passes.
+/// Convert one file to `<out_dir>/<out_name>.<ext>` (`out_name` comes from
+/// `plan_output_names`). `on_progress` receives 0.0..=1.0 across all passes.
 pub fn convert_file(
     tools: &Tools,
     input: &Path,
     out_dir: &Path,
+    out_name: &str,
     settings: &Settings,
     scratch: &Path,
     mut on_progress: impl FnMut(f64),
@@ -153,9 +201,10 @@ pub fn convert_file(
     let info = ffmpeg::probe(tools, input)?;
     std::fs::create_dir_all(out_dir).map_err(|e| format!("cannot create output dir: {e}"))?;
     let ext = output_ext(input, &info, settings);
-    let output = output_path(out_dir, input, &ext);
+    let output = out_dir.join(format!("{out_name}.{ext}"));
+    claim_output(&output)?;
 
-    if info.is_video {
+    let result = if info.is_video {
         convert_video(
             tools,
             input,
@@ -164,15 +213,19 @@ pub fn convert_file(
             settings,
             scratch,
             &mut on_progress,
-        )?;
+        )
     } else {
-        convert_image(tools, input, &output, &info, settings)?;
-        on_progress(1.0);
-    }
-
+        convert_image(tools, input, &output, &info, settings).map(|()| on_progress(1.0))
+    };
     let out_bytes = std::fs::metadata(&output).map(|m| m.len()).unwrap_or(0);
-    if out_bytes == 0 {
-        return Err("output file is empty".into());
+    let result = result.and_then(|()| match out_bytes {
+        0 => Err("output file is empty".to_string()),
+        _ => Ok(()),
+    });
+    if let Err(e) = result {
+        // Never leave the claimed (possibly empty or partial) file behind.
+        let _ = std::fs::remove_file(&output);
+        return Err(e);
     }
     Ok(ConvertOutcome { output, out_bytes })
 }
@@ -334,6 +387,7 @@ where
     F: Fn(usize, f64, Option<&BulkItemResult>) + Send + Sync,
 {
     let jobs = jobs.max(1);
+    let names = plan_output_names(out_dir, &inputs);
     let (tx, rx) = mpsc::channel::<usize>();
     for i in 0..inputs.len() {
         tx.send(i).expect("queue send");
@@ -352,6 +406,7 @@ where
             let results = Arc::clone(&results);
             let inputs = Arc::clone(&inputs);
             let on_event = Arc::clone(&on_event);
+            let names = &names;
             scope.spawn(move || loop {
                 let idx = {
                     let guard = rx.lock().expect("queue lock");
@@ -360,9 +415,10 @@ where
                 let Ok(idx) = idx else { break };
                 let input = &inputs[idx];
                 let in_bytes = std::fs::metadata(input).map(|m| m.len()).unwrap_or(0);
-                let res = convert_file(tools, input, out_dir, settings, scratch, |f| {
-                    on_event(idx, f, None);
-                });
+                let res =
+                    convert_file(tools, input, out_dir, &names[idx], settings, scratch, |f| {
+                        on_event(idx, f, None);
+                    });
                 let item = BulkItemResult {
                     result: res.map(|o| (o.output, in_bytes, o.out_bytes)),
                 };

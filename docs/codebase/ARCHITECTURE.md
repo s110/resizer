@@ -19,7 +19,7 @@ Verificado contra el código el 2026-08-23 (v1.0.1, commit `4b1421d`).
   2. ffmpeg es opcional al arrancar: `tools: Mutex<Option<Tools>>` en el
      contexto del servidor; la pantalla de setup lo rellena en caliente.
   3. Los originales nunca se modifican: la salida siempre va a otro archivo
-     no-clobbering (`jobs::output_path`) y el directorio de salida se excluye
+     no-clobbering (`jobs::plan_output_names`) y el directorio de salida se excluye
      de la re-ingesta (`jobs::collect_inputs` con `exclude`).
 
 ## 2) System Flow
