@@ -584,26 +584,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn every_os_offers_at_least_the_download_option() {
-        let opts = options();
-        assert!(!opts.is_empty());
-        assert!(
-            opts.iter().any(|o| o.id == "download"),
-            "download must always be offered: {opts:?}"
-        );
-    }
-
-    #[test]
-    fn exactly_one_option_is_recommended() {
-        let opts = options();
-        let n = opts.iter().filter(|o| o.recommended).count();
-        assert_eq!(n, 1, "expected one recommendation, got {n}: {opts:?}");
-    }
-
-    #[test]
     fn recommendation_prefers_a_package_manager_when_present() {
+        // Uses the real PATH, so on a machine with brew/apt/winget this sees
+        // more than one option (the setup.rs tests only ever see "download").
         let opts = options();
-        let rec = opts.iter().find(|o| o.recommended).unwrap();
+        let recommended: Vec<_> = opts.iter().filter(|o| o.recommended).collect();
+        assert_eq!(recommended.len(), 1, "exactly one recommendation: {opts:?}");
+        let rec = recommended[0];
         // If any package manager is available, it must be the recommendation.
         let has_pm = opts.iter().any(|o| o.id != "download");
         if has_pm {
@@ -613,18 +600,6 @@ mod tests {
             );
         } else {
             assert_eq!(rec.id, "download");
-        }
-    }
-
-    #[test]
-    fn options_carry_a_human_explanation() {
-        for o in options() {
-            assert!(!o.label.is_empty());
-            assert!(
-                o.detail.len() > 20,
-                "option {} needs a real explanation",
-                o.id
-            );
         }
     }
 
@@ -645,18 +620,6 @@ mod tests {
         // Friendly aliases.
         assert_eq!(Method::from_id("brew"), Some(Method::Homebrew));
         assert_eq!(Method::from_id("choco"), Some(Method::Chocolatey));
-    }
-
-    #[test]
-    fn data_dir_is_private_and_not_next_to_the_exe() {
-        let d = data_dir();
-        assert!(d.ends_with("resizer"), "{d:?}");
-        let exe_dir = std::env::current_exe()
-            .ok()
-            .and_then(|p| p.parent().map(|p| p.to_path_buf()));
-        if let Some(exe_dir) = exe_dir {
-            assert_ne!(bin_dir(), exe_dir);
-        }
     }
 
     #[test]

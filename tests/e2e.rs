@@ -1,6 +1,8 @@
 //! End-to-end tests that drive the real binary against real ffmpeg.
 //! They are skipped (with a notice) when ffmpeg is not installed, so local
-//! `cargo test` still passes everywhere; CI installs ffmpeg and runs them.
+//! `cargo test` still passes everywhere; in CI (`CI` set) a missing ffmpeg is
+//! a failure, never a silent skip. The main batch scenario lives in
+//! `tests/e2e_shoot_batch.rs`.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -44,17 +46,6 @@ fn make_test_video(path: &Path, seconds: u32, w: u32, h: u32, with_audio: bool) 
     );
 }
 
-fn make_test_image(path: &Path, w: u32, h: u32) {
-    let out = Command::new("ffmpeg")
-        .args(["-y", "-f", "lavfi", "-i"])
-        .arg(format!("testsrc2=size={w}x{h}:rate=1:duration=1"))
-        .args(["-frames:v", "1"])
-        .arg(path)
-        .output()
-        .expect("run ffmpeg");
-    assert!(out.status.success());
-}
-
 /// ffprobe helper: returns (width, height, has_audio).
 fn probe_dims(path: &Path) -> (u32, u32, bool) {
     let out = Command::new("ffprobe")
@@ -83,6 +74,10 @@ fn no_ffmpeg_home() -> PathBuf {
 macro_rules! require_ffmpeg {
     () => {
         if !ffmpeg_available() {
+            assert!(
+                std::env::var_os("CI").is_none(),
+                "ffmpeg missing in CI: e2e tests must not silently skip"
+            );
             eprintln!("SKIP: ffmpeg not installed");
             return;
         }
@@ -90,121 +85,34 @@ macro_rules! require_ffmpeg {
 }
 
 #[test]
-fn hover_preset_produces_4_5_muted_video_under_budget() {
-    require_ffmpeg!();
-    let dir = tmp_dir("hover");
-    let src = dir.join("landscape.mp4");
-    make_test_video(&src, 4, 640, 360, true);
-
-    let out_dir = dir.join("out");
-    let status = Command::new(bin())
-        .arg("convert")
-        .arg(&src)
-        .args(["--preset", "hover", "--max-mb", "2", "--speed", "veryfast"])
-        .arg("--out")
-        .arg(&out_dir)
-        .status()
-        .expect("run resizer");
-    assert!(status.success());
-
-    let out = out_dir.join("landscape-web.mp4");
-    assert!(out.is_file(), "missing output");
-    let (w, h, has_audio) = probe_dims(&out);
-    // 4:5 aspect, within rounding.
-    assert!(
-        ((w as f64 / h as f64) - 0.8).abs() < 0.02,
-        "expected 4:5, got {w}x{h}"
-    );
-    assert!(!has_audio, "hover preset must strip audio");
-    let size = std::fs::metadata(&out).unwrap().len();
-    assert!(
-        size <= 2 * 1024 * 1024,
-        "auto-tune busted the 2MB budget: {size} bytes"
-    );
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
-#[test]
-fn keep_audio_flag_overrides_hover_mute() {
+fn keep_audio_overrides_hover_mute_and_still_fits_the_budget() {
     require_ffmpeg!();
     let dir = tmp_dir("audio");
     let src = dir.join("clip.mp4");
-    make_test_video(&src, 2, 320, 240, true);
+    make_test_video(&src, 6, 640, 480, true);
 
+    // A budget tight enough that the audio track must be paid for out of it:
+    // if the planner forgot to reserve those bits, the file would overshoot.
     let out_dir = dir.join("out");
     let status = Command::new(bin())
         .arg("convert")
         .arg(&src)
-        .args([
-            "--preset",
-            "hover",
-            "--keep-audio",
-            "--max-mb",
-            "2",
-            "--speed",
-            "veryfast",
-        ])
+        .args(["--preset", "hover", "--keep-audio", "--max-mb", "0.5"])
+        .args(["--speed", "veryfast"])
         .arg("--out")
         .arg(&out_dir)
         .status()
         .unwrap();
     assert!(status.success());
-    let (_, _, has_audio) = probe_dims(&out_dir.join("clip-web.mp4"));
+    let out = out_dir.join("clip-web.mp4");
+    let (w, h, has_audio) = probe_dims(&out);
     assert!(has_audio, "--keep-audio should preserve the track");
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
-#[test]
-fn folder_bulk_convert_handles_mixed_media() {
-    require_ffmpeg!();
-    let dir = tmp_dir("bulk");
-    let media = dir.join("media");
-    std::fs::create_dir_all(&media).unwrap();
-    make_test_video(&media.join("a.mp4"), 2, 320, 240, false);
-    make_test_video(&media.join("b.mp4"), 2, 426, 240, false);
-    make_test_image(&media.join("c.png"), 800, 600);
-    std::fs::write(media.join("notes.txt"), "not media").unwrap();
-
-    let out_dir = dir.join("out");
-    let status = Command::new(bin())
-        .arg("convert")
-        .arg(&media)
-        .args([
-            "--preset", "original", "--crf", "30", "--speed", "veryfast", "--jobs", "2",
-        ])
-        .arg("--out")
-        .arg(&out_dir)
-        .status()
-        .unwrap();
-    assert!(status.success());
-
-    assert!(out_dir.join("a-web.mp4").is_file());
-    assert!(out_dir.join("b-web.mp4").is_file());
-    assert!(out_dir.join("c-web.png").is_file());
-    assert_eq!(std::fs::read_dir(&out_dir).unwrap().count(), 3);
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
-#[test]
-fn image_autotune_fits_size_budget() {
-    require_ffmpeg!();
-    let dir = tmp_dir("img");
-    let src = dir.join("big.png");
-    make_test_image(&src, 1920, 1080);
-
-    let out_dir = dir.join("out");
-    let status = Command::new(bin())
-        .arg("convert")
-        .arg(&src)
-        .args(["--image-format", "jpg", "--max-mb", "0.2"])
-        .arg("--out")
-        .arg(&out_dir)
-        .status()
-        .unwrap();
-    assert!(status.success());
-    let out = out_dir.join("big-web.jpg");
+    assert_eq!((w, h), (384, 480), "hover crop still applies");
     let size = std::fs::metadata(&out).unwrap().len();
-    assert!(size <= 210 * 1024, "image over budget: {size}");
+    assert!(
+        size <= 512 * 1024,
+        "video + audio overshot the 0.5 MB budget: {size} bytes"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 

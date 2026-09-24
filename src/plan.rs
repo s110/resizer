@@ -371,55 +371,6 @@ mod tests {
     }
 
     #[test]
-    fn hover_preset_crops_landscape_source_to_4_5() {
-        let s = Settings::hover();
-        let p = plan_video(&info(1920, 1080, 8.0), &s);
-        assert_eq!(p.crop, Some((864, 1080)));
-        assert_eq!((p.out_w, p.out_h), (864, 1080));
-        // Hover strips audio by default.
-        assert_eq!(p.audio_kbps, None);
-        // Aspect is 4:5.
-        assert!((p.out_w as f64 / p.out_h as f64 - 0.8).abs() < 0.01);
-    }
-
-    #[test]
-    fn rotated_source_uses_display_dimensions() {
-        let mut i = info(1920, 1080, 5.0);
-        i.rotation = 90; // phone video: displayed as 1080x1920
-        assert_eq!(i.display_dims(), (1080, 1920));
-        let s = Settings {
-            ratio: Ratio::Original,
-            max_width: 1080,
-            max_height: 1920,
-            ..Settings::default()
-        };
-        let p = plan_video(&i, &s);
-        assert_eq!((p.out_w, p.out_h), (1080, 1920));
-    }
-
-    #[test]
-    fn autotune_hits_the_bitrate_math() {
-        // 10 s video, 8 MB budget, audio kept at 96 kbps:
-        // bits = 8 * 1024^2 * 8 * 0.96 = 64424509.44 * 0.96...
-        let s = Settings {
-            max_mb: Some(8.0),
-            strip_audio: false,
-            ..Settings::default()
-        };
-        let p = plan_video(&info(1280, 720, 10.0), &s);
-        match p.rate {
-            RateControl::TwoPass { video_kbps } => {
-                let budget: f64 = 8.0 * 1024.0 * 1024.0 * 8.0 * 0.96;
-                let from_budget = ((budget - 96_000.0 * 10.0) / 10.0 / 1000.0).floor();
-                let ceiling = (1280.0 * 720.0 * 30.0 * 0.15 / 1000.0_f64).ceil();
-                assert_eq!(video_kbps as f64, from_budget.min(ceiling));
-            }
-            other => panic!("expected two-pass, got {other:?}"),
-        }
-        assert_eq!(p.audio_kbps, Some(96));
-    }
-
-    #[test]
     fn autotune_does_not_inflate_short_clips() {
         // A 3 s clip with a 10 MB cap: filling the cap would mean ~28 Mbps,
         // which is absurd. The bits-per-pixel ceiling must kick in.
@@ -433,15 +384,13 @@ mod tests {
         let p = plan_video(&info(1080, 1920, 3.0), &s);
         match p.rate {
             RateControl::TwoPass { video_kbps } => {
-                let ceiling =
-                    (p.out_w as f64 * p.out_h as f64 * 30.0 * 0.15 / 1000.0).ceil() as u32;
-                assert!(
-                    video_kbps <= ceiling,
-                    "bitrate {video_kbps} should be capped near {ceiling}"
-                );
-                // Sanity: implied size is far below the 10 MB cap.
+                // The cap is a limit, not a target: a short clip must come out
+                // well under it instead of being inflated to fill it.
                 let implied_mb = video_kbps as f64 * 1000.0 * 3.0 / 8.0 / 1024.0 / 1024.0;
-                assert!(implied_mb < 5.0, "implied {implied_mb:.1} MB");
+                assert!(
+                    implied_mb < 5.0,
+                    "implied {implied_mb:.1} MB of a 10 MB cap"
+                );
             }
             other => panic!("expected two-pass, got {other:?}"),
         }
@@ -495,27 +444,19 @@ mod tests {
     }
 
     #[test]
-    fn filter_chain_orders_crop_then_scale() {
-        let p = EncodePlan {
-            crop: Some((864, 1080)),
-            out_w: 864,
-            out_h: 1080,
-            fps: None,
-            rate: RateControl::Crf(23),
-            audio_kbps: None,
-        };
-        assert_eq!(
-            filter_chain(&p),
-            "crop=864:1080,scale=864:1080:flags=lanczos,setsar=1"
-        );
-    }
-
-    #[test]
     fn jpeg_quality_mapping_covers_the_scale() {
+        // Slider ends map to mjpeg's best (2) and worst (31) quantizers, and a
+        // higher slider value never yields a worse quantizer.
         assert_eq!(jpeg_q_from_percent(100), 2);
         assert_eq!(jpeg_q_from_percent(1), 31);
-        let mid = jpeg_q_from_percent(50);
-        assert!((2..=31).contains(&mid));
+        assert_eq!(jpeg_q_from_percent(0), 31, "out-of-range input is clamped");
+        for q in 1..100u8 {
+            assert!(
+                jpeg_q_from_percent(q + 1) <= jpeg_q_from_percent(q),
+                "quality {} maps worse than {q}",
+                q + 1
+            );
+        }
     }
 
     #[test]

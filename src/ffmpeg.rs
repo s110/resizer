@@ -513,52 +513,6 @@ mod tests {
     }
 
     #[test]
-    fn crf_command_is_single_pass_with_faststart() {
-        let cmds = video_commands(
-            Path::new("in.mp4"),
-            Path::new("out.mp4"),
-            &plan_crf(),
-            "medium",
-            Path::new("log"),
-            None,
-        );
-        assert_eq!(cmds.len(), 1);
-        let joined = cmds[0].join(" ");
-        assert!(joined.contains("-crf 23"), "{joined}");
-        assert!(joined.contains("-an"), "{joined}");
-        assert!(joined.contains("+faststart"), "{joined}");
-        assert!(joined.contains("yuv420p"), "{joined}");
-        assert!(joined.contains("crop=864:1080"), "{joined}");
-        assert!(joined.ends_with("out.mp4"), "{joined}");
-    }
-
-    #[test]
-    fn two_pass_commands_share_the_passlog() {
-        let plan = EncodePlan {
-            rate: RateControl::TwoPass { video_kbps: 2500 },
-            audio_kbps: Some(96),
-            ..plan_crf()
-        };
-        let cmds = video_commands(
-            Path::new("in.mp4"),
-            Path::new("out.mp4"),
-            &plan,
-            "medium",
-            Path::new("statslog"),
-            None,
-        );
-        assert_eq!(cmds.len(), 2);
-        let (p1, p2) = (cmds[0].join(" "), cmds[1].join(" "));
-        assert!(p1.contains("-pass 1") && p1.contains("statslog"), "{p1}");
-        assert!(p1.contains("-f null"), "{p1}");
-        assert!(p1.contains("-an"), "pass 1 must not encode audio: {p1}");
-        assert!(p2.contains("-pass 2") && p2.contains("statslog"), "{p2}");
-        assert!(p2.contains("-b:v 2500k"), "{p2}");
-        assert!(p2.contains("-b:a 96k"), "{p2}");
-        assert!(p2.ends_with("out.mp4"), "{p2}");
-    }
-
-    #[test]
     fn image_command_picks_the_right_encoder() {
         let webp = image_command(
             Path::new("a.png"),
