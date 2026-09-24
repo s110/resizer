@@ -10,7 +10,7 @@
 
 import { chromium } from 'playwright-core';
 import { spawn, execFileSync } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import net from 'node:net';
@@ -58,7 +58,15 @@ async function startServer({ withFfmpeg }) {
   const home = mkdtempSync(join(tmpdir(), 'resizer-ui-'));
   const env = { ...process.env, HOME: home, XDG_DATA_HOME: home, LOCALAPPDATA: home };
   if (!withFfmpeg) {
-    env.PATH = '';
+    // No ffmpeg anywhere, but a package manager on PATH (a stub that only
+    // answers --version), so the screen has a real choice to offer.
+    const fakeBin = join(home, 'fake-bin');
+    execFileSync('mkdir', ['-p', fakeBin]);
+    for (const pm of ['brew', 'apt-get']) {
+      writeFileSync(join(fakeBin, pm), '#!/bin/sh\nexit 0\n');
+      chmodSync(join(fakeBin, pm), 0o755);
+    }
+    env.PATH = fakeBin;
     env.FFMPEG_PATH = '/definitely/not/here';
   }
   const child = spawn(BIN, ['--port', String(port), '--no-browser'], {
@@ -95,18 +103,23 @@ async function testSetupScreen(browser) {
     const methods = await page.$$('.method');
     check('install methods are listed', methods.length >= 1, `found ${methods.length}`);
 
-    const recommended = await page.$$('.method .badge');
-    check('one method is marked recommended', recommended.length >= 1);
+    check('a package manager is offered next to the download', methods.length >= 2,
+      `found ${methods.length}`);
+
+    const recommended = await page.$$('.method .badge:not(.warn)');
+    check('exactly one method is marked recommended', recommended.length === 1,
+      `found ${recommended.length}`);
 
     const selected = await page.$$('.method.on');
     check('a method is preselected', selected.length === 1, `${selected.length} selected`);
 
     // The user must be able to pick a different one before installing.
-    if (methods.length > 1) {
-      await methods[methods.length - 1].click();
-      const nowSelected = await page.$$('.method.on');
-      check('choosing another method updates the selection', nowSelected.length === 1);
-    }
+    const before = await page.getAttribute('.method.on', 'data-method');
+    await methods[methods.length - 1].click();
+    const nowSelected = await page.$$('.method.on');
+    const after = await page.getAttribute('.method.on', 'data-method');
+    check('choosing another method updates the selection',
+      nowSelected.length === 1 && after !== before, `${before} -> ${after}`);
 
     const detail = await page.textContent('.method .why');
     check('the method explains what it will do', (detail || '').length > 20);
