@@ -169,12 +169,15 @@ fn passlog_prefix(scratch: &Path) -> PathBuf {
 }
 
 fn cleanup_passlog(prefix: &Path) {
-    // x264 writes "<prefix>-0.log" and "<prefix>-0.log.mbtree".
+    // x264 writes "<prefix>-0.log" and "<prefix>-0.log.mbtree". Match up to
+    // the dash: prefix "x264-pass-<pid>-1" alone would also match the live
+    // files of jobs 10 to 19 and 100 onward.
     if let (Some(dir), Some(name)) = (prefix.parent(), prefix.file_name().and_then(|n| n.to_str()))
     {
+        let own = format!("{name}-");
         if let Ok(entries) = std::fs::read_dir(dir) {
             for e in entries.flatten() {
-                if e.file_name().to_string_lossy().starts_with(name) {
+                if e.file_name().to_string_lossy().starts_with(&own) {
                     let _ = std::fs::remove_file(e.path());
                 }
             }
