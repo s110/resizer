@@ -455,6 +455,8 @@ function toast(msg, ms = 3200) {
   clearTimeout(t._h);
   t._h = setTimeout(() => (t.style.display = "none"), ms);
 }
+// No body means GET. The server routes every action that changes state as
+// POST only, so those calls pass `{}` even when they have nothing to send.
 async function api(path, body) {
   const res = await fetch(path, {
     method: body === undefined ? "GET" : "POST",
@@ -898,14 +900,14 @@ function closeModal() {
 $("#convert").addEventListener("click", async () => {
   try {
     await api("/api/settings", { settings: settingsFromPanel(), out_dir: $("#outdir").value, jobs: +$("#jobsn").value || 4 });
-    await api("/api/convert");
+    await api("/api/convert", {});
     refresh();
   } catch (e) { toast(e.message); }
 });
 $("#clear").addEventListener("click", async () => {
-  try { await api("/api/clear"); refresh(); } catch (e) { toast(e.message); }
+  try { await api("/api/clear", {}); refresh(); } catch (e) { toast(e.message); }
 });
-$("#openout").addEventListener("click", () => api("/api/open-output").catch(() => {}));
+$("#openout").addEventListener("click", () => api("/api/open-output", {}).catch(() => {}));
 
 /* ---------- boot ---------- */
 refresh();
