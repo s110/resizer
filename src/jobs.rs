@@ -203,27 +203,39 @@ pub fn convert_file(
     let ext = output_ext(input, &info, settings);
     let output = out_dir.join(format!("{out_name}.{ext}"));
     claim_output(&output)?;
+    // ffmpeg writes to a side file that is renamed over the claim only once
+    // it is complete. If the process dies mid-encode, the final name holds an
+    // empty claim and never a truncated file that looks finished. The side
+    // file keeps the real extension last, because ffmpeg picks the format
+    // from it.
+    let partial = out_dir.join(format!("{out_name}.part.{ext}"));
 
     let result = if info.is_video {
         convert_video(
             tools,
             input,
-            &output,
+            &partial,
             &info,
             settings,
             scratch,
             &mut on_progress,
         )
     } else {
-        convert_image(tools, input, &output, &info, settings).map(|()| on_progress(1.0))
+        convert_image(tools, input, &partial, &info, settings).map(|()| on_progress(1.0))
     };
-    let out_bytes = std::fs::metadata(&output).map(|m| m.len()).unwrap_or(0);
-    let result = result.and_then(|()| match out_bytes {
-        0 => Err("output file is empty".to_string()),
-        _ => Ok(()),
-    });
+    let out_bytes = std::fs::metadata(&partial).map(|m| m.len()).unwrap_or(0);
+    let result = result
+        .and_then(|()| match out_bytes {
+            0 => Err("output file is empty".to_string()),
+            _ => Ok(()),
+        })
+        .and_then(|()| {
+            std::fs::rename(&partial, &output)
+                .map_err(|e| format!("cannot move the result to {}: {e}", output.display()))
+        });
     if let Err(e) = result {
-        // Never leave the claimed (possibly empty or partial) file behind.
+        // Never leave the claimed (possibly empty or partial) files behind.
+        let _ = std::fs::remove_file(&partial);
         let _ = std::fs::remove_file(&output);
         return Err(e);
     }
