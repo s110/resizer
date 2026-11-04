@@ -91,6 +91,42 @@ struct SetupState {
     error: Option<String>,
 }
 
+/// Ends a conversion batch when its thread exits, panic included. Without it
+/// a panic would leave `converting` set and the entries in `Working`: no new
+/// batch and no "clear" until the app restarts.
+struct BatchEnd(Arc<Ctx>);
+
+impl Drop for BatchEnd {
+    fn drop(&mut self) {
+        let mut st = self.0.state.lock().unwrap_or_else(|p| p.into_inner());
+        for e in st
+            .entries
+            .iter_mut()
+            .filter(|e| e.status == Status::Working)
+        {
+            e.status = Status::Error;
+            e.error = Some("La conversión se interrumpió.".into());
+        }
+        st.converting = false;
+    }
+}
+
+/// Same for the ffmpeg install thread: a panic must not leave `installing`
+/// set, or every later attempt gets 409.
+struct InstallEnd(Arc<Ctx>);
+
+impl Drop for InstallEnd {
+    fn drop(&mut self) {
+        let mut setup = self.0.setup.lock().unwrap_or_else(|p| p.into_inner());
+        if setup.installing {
+            setup.installing = false;
+            setup
+                .error
+                .get_or_insert_with(|| "La instalación se interrumpió. Prueba otra vez.".into());
+        }
+    }
+}
+
 fn json_response(status: u32, body: String) -> Response<std::io::Cursor<Vec<u8>>> {
     Response::from_string(body)
         .with_status_code(status as u16)
@@ -364,6 +400,7 @@ fn api_ffmpeg_install(req: &mut Request, ctx: &Arc<Ctx>) -> Response<std::io::Cu
 
     let ctx2 = Arc::clone(ctx);
     std::thread::spawn(move || {
+        let _end = InstallEnd(Arc::clone(&ctx2));
         let result = install::install(method, |step| {
             ctx2.setup.lock().unwrap().steps.push(step.to_string());
         });
@@ -592,6 +629,7 @@ fn api_convert(ctx: &Arc<Ctx>) -> Response<std::io::Cursor<Vec<u8>>> {
 
     let ctx2 = Arc::clone(ctx);
     std::thread::spawn(move || {
+        let _end = BatchEnd(Arc::clone(&ctx2));
         let (ids_paths, out_dir, settings, njobs) = {
             let st = ctx2.state.lock().unwrap();
             (
@@ -636,7 +674,6 @@ fn api_convert(ctx: &Arc<Ctx>) -> Response<std::io::Cursor<Vec<u8>>> {
                 }
             },
         );
-        ctx2.state.lock().unwrap().converting = false;
     });
 
     ok_json(&serde_json::json!({ "started": true }))
