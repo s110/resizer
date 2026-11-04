@@ -122,7 +122,8 @@ encoder): choose jpg or png output, or install an ffmpeg build that includes lib
 
 /// True when this ffmpeg build has an encoder with exactly this name. Cached
 /// per ffmpeg executable, since a batch asks once per file. If ffmpeg cannot
-/// be asked, report true and let the encode itself surface the problem.
+/// be asked, report true and let the encode itself surface the problem. That
+/// guess is not cached, so the next file asks again.
 pub fn has_encoder(tools: &Tools, name: &str) -> bool {
     static CACHE: OnceLock<Mutex<HashMap<(PathBuf, String), bool>>> = OnceLock::new();
     let key = (tools.ffmpeg.clone(), name.to_string());
@@ -143,10 +144,14 @@ pub fn has_encoder(tools: &Tools, name: &str) -> bool {
             String::from_utf8_lossy(&o.stdout)
                 .lines()
                 .any(|l| l.split_whitespace().nth(1) == Some(name))
-        })
-        .unwrap_or(true);
-    cache.lock().expect("encoder cache").insert(key, found);
-    found
+        });
+    match found {
+        Some(known) => {
+            cache.lock().expect("encoder cache").insert(key, known);
+            known
+        }
+        None => true,
+    }
 }
 
 /// Probe a media file with ffprobe (JSON output).

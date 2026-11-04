@@ -45,7 +45,7 @@ No hay herramienta de cobertura configurada.
 | Unit | Sí (acotado) | Matemática de `plan` (crop exacto, no-upscale, dimensiones pares, techo/piso del auto-ajuste, fps), parseo de ffprobe, mapeo de extensiones, opciones de instalación | Todo puro, corre sin ffmpeg; lo que el E2E ya cubre se borró |
 | Integración/E2E | Sí | `e2e_shoot_batch`: lote hover con rotación, EXIF, alfa 16 bits, GIF, panorámica, corrupto, nombres repetidos y re-ejecución, con artefacto JSON. `e2e.rs`: `--keep-audio` bajo presupuesto ajustado, `probe`, error amable sin ffmpeg | Sin ffmpeg se saltan en local y fallan con `CI` definido |
 | Arranque sin ffmpeg | Sí | El servidor arranca, sirve la pantalla de setup, ofrece opciones con una recomendación, los endpoints de media devuelven 503 con mensaje claro, sobrevive a stdout cerrado; en Windows verifica el subsystem PE (GUI=2, CLI=3) | `tests/setup.rs`; cliente HTTP mínimo escrito a mano (sin dev-deps) |
-| UI (navegador real) | Sí | Pantalla de instalación (nada se instala solo), previews grandes, comparador A/B: arrastre del divisor, flechas de teclado, `object-fit` idéntico en ambas capas, clip-path real, modo lado a lado, limpieza al cerrar | Chromium vía Playwright; corre en CI (job `ui`) |
+| UI (navegador real) | Sí | Pantalla de instalación (nada se instala solo), previews grandes, comparador A/B: arrastre del divisor, flechas de teclado, `object-fit` idéntico en ambas capas, clip-path real, modo lado a lado, limpieza al cerrar, Esc durante la generación de la previa. Botones de acción: "Convertir todo" lleva un video y una foto a "hecho" con sus archivos en la carpeta del panel, "Vaciar lista" vacía la lista y la carpeta se puede volver a agregar, "abrir" sale como POST con el token | Chromium vía Playwright; corre en CI (job `ui`) |
 
 ## 4) Mocking and Isolation Strategy
 
@@ -70,7 +70,8 @@ No hay herramienta de cobertura configurada.
 - Huecos conocidos:
   - `src/server.rs` solo tiene unitarios de helpers (`urldecode`,
     `content_type_for`, `default_out_dir`); los endpoints con ffmpeg presente
-    (upload, preview, convert) se cubren indirectamente vía los tests de UI.
+    (folder, preview, convert, clear) se cubren vía los tests de UI. La
+    subida por arrastre (upload) no tiene test.
   - `install::install` (los caminos que de verdad instalan) no se ejecuta en
     tests — razonable: instalaría software real.
   - El comentario de CI sobre Playwright: `npx playwright@latest` desalinearía

@@ -91,6 +91,42 @@ struct SetupState {
     error: Option<String>,
 }
 
+/// Ends a conversion batch when its thread exits, panic included. Without it
+/// a panic would leave `converting` set and the entries in `Working`: no new
+/// batch and no "clear" until the app restarts.
+struct BatchEnd(Arc<Ctx>);
+
+impl Drop for BatchEnd {
+    fn drop(&mut self) {
+        let mut st = self.0.state.lock().unwrap_or_else(|p| p.into_inner());
+        for e in st
+            .entries
+            .iter_mut()
+            .filter(|e| e.status == Status::Working)
+        {
+            e.status = Status::Error;
+            e.error = Some("La conversión se interrumpió.".into());
+        }
+        st.converting = false;
+    }
+}
+
+/// Same for the ffmpeg install thread: a panic must not leave `installing`
+/// set, or every later attempt gets 409.
+struct InstallEnd(Arc<Ctx>);
+
+impl Drop for InstallEnd {
+    fn drop(&mut self) {
+        let mut setup = self.0.setup.lock().unwrap_or_else(|p| p.into_inner());
+        if setup.installing {
+            setup.installing = false;
+            setup
+                .error
+                .get_or_insert_with(|| "La instalación se interrumpió. Prueba otra vez.".into());
+        }
+    }
+}
+
 fn json_response(status: u32, body: String) -> Response<std::io::Cursor<Vec<u8>>> {
     Response::from_string(body)
         .with_status_code(status as u16)
@@ -352,6 +388,17 @@ fn api_ffmpeg_install(req: &mut Request, ctx: &Arc<Ctx>) -> Response<std::io::Cu
     let Some(method) = body["method"].as_str().and_then(install::Method::from_id) else {
         return err_json(400, "No reconozco esa forma de instalación.");
     };
+    // Same rule as the CLI: only the methods this system offers.
+    if !install::options().iter().any(|o| o.id == method.id()) {
+        return err_json(
+            400,
+            "Esa forma de instalación no está disponible en este equipo.",
+        );
+    }
+    // Copying over a working ffmpeg can fail while it runs ("Text file busy").
+    if tools_of(ctx).is_some() {
+        return err_json(409, "ffmpeg ya está instalado.");
+    }
     {
         let mut setup = ctx.setup.lock().unwrap();
         if setup.installing {
@@ -364,15 +411,23 @@ fn api_ffmpeg_install(req: &mut Request, ctx: &Arc<Ctx>) -> Response<std::io::Cu
 
     let ctx2 = Arc::clone(ctx);
     std::thread::spawn(move || {
+        let _end = InstallEnd(Arc::clone(&ctx2));
         let result = install::install(method, |step| {
             ctx2.setup.lock().unwrap().steps.push(step.to_string());
         });
         let mut setup = ctx2.setup.lock().unwrap();
         match result.and_then(|_| {
-            ffmpeg::find_tools(None).map_err(|_| {
-                "La instalación terminó pero ffmpeg sigue sin responder. \
-                 Prueba con otra forma de instalación."
-                    .to_string()
+            ffmpeg::find_tools(None).map_err(|_| match std::env::var_os("FFMPEG_PATH") {
+                // FFMPEG_PATH wins over every other place, so no install
+                // method can help until it changes.
+                Some(p) => format!(
+                    "La instalación terminó, pero FFMPEG_PATH apunta a {} y ese ffmpeg \
+                     no responde. Corrige o quita esa variable y vuelve a abrir resizer.",
+                    Path::new(&p).display()
+                ),
+                None => "La instalación terminó pero ffmpeg sigue sin responder. \
+                         Prueba con otra forma de instalación."
+                    .to_string(),
             })
         }) {
             Ok(tools) => {
@@ -415,25 +470,38 @@ fn api_upload(req: &mut Request, ctx: &Arc<Ctx>) -> Response<std::io::Cursor<Vec
     let tmp = tmp_dir.join(&safe);
     let mut file = match std::fs::File::create(&tmp) {
         Ok(f) => f,
-        Err(e) => return err_json(500, &format!("temp file: {e}")),
+        Err(e) => {
+            let _ = std::fs::remove_dir_all(&tmp_dir);
+            return err_json(500, &format!("temp file: {e}"));
+        }
     };
+    // The browser announces the size; fewer bytes means the upload was cut.
+    let expected = req.body_length().map(|n| n as u64);
     // Read one byte past the cap so truncation is detected, not silent.
     let copied = std::io::copy(&mut req.as_reader().take(MAX_UPLOAD + 1), &mut file);
+    // Close the copy first: Windows cannot delete an open file.
+    drop(file);
+    // Every rejection removes the whole per-id directory, not only the file.
+    let reject = |status: u32, msg: &str| {
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+        err_json(status, msg)
+    };
     match copied {
         Ok(n) if n > MAX_UPLOAD => {
-            let _ = std::fs::remove_file(&tmp);
-            return err_json(413, "Ese archivo pasa de 4 GB; es demasiado grande.");
+            return reject(413, "Ese archivo pasa de 4 GB; es demasiado grande.");
+        }
+        Ok(n) if expected.is_some_and(|len| n < len) => {
+            return reject(
+                400,
+                "La subida se cortó antes de terminar. Vuelve a intentarlo.",
+            );
         }
         Ok(n) if n > 0 => {}
-        _ => {
-            let _ = std::fs::remove_file(&tmp);
-            return err_json(400, "El archivo llegó vacío.");
-        }
+        _ => return reject(400, "El archivo llegó vacío."),
     }
 
     let Some(tools) = tools_of(ctx) else {
-        let _ = std::fs::remove_dir_all(&tmp_dir);
-        return err_json(503, NEED_FFMPEG);
+        return reject(503, NEED_FFMPEG);
     };
     match ffmpeg::probe(&tools, &tmp) {
         Ok(info) => {
@@ -455,10 +523,7 @@ fn api_upload(req: &mut Request, ctx: &Arc<Ctx>) -> Response<std::io::Cursor<Vec
             st.entries.push(entry);
             ok_json(&serde_json::json!({ "id": id }))
         }
-        Err(e) => {
-            let _ = std::fs::remove_file(&tmp);
-            err_json(415, &format!("No pude leer ese archivo: {e}"))
-        }
+        Err(e) => reject(415, &format!("No pude leer ese archivo: {e}")),
     }
 }
 
@@ -592,6 +657,7 @@ fn api_convert(ctx: &Arc<Ctx>) -> Response<std::io::Cursor<Vec<u8>>> {
 
     let ctx2 = Arc::clone(ctx);
     std::thread::spawn(move || {
+        let _end = BatchEnd(Arc::clone(&ctx2));
         let (ids_paths, out_dir, settings, njobs) = {
             let st = ctx2.state.lock().unwrap();
             (
@@ -636,7 +702,6 @@ fn api_convert(ctx: &Arc<Ctx>) -> Response<std::io::Cursor<Vec<u8>>> {
                 }
             },
         );
-        ctx2.state.lock().unwrap().converting = false;
     });
 
     ok_json(&serde_json::json!({ "started": true }))

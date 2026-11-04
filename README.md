@@ -116,7 +116,8 @@ cargo clippy --all-targets -- -D warnings
 cargo fmt --all
 cargo run --bin resizer     # abre la GUI
 
-# Tests de la interfaz (pantalla de instalación, previas, comparador A/B):
+# Tests de la interfaz (pantalla de instalación, previas, comparador A/B,
+# botones de convertir, vaciar y abrir):
 cd tests/ui && npm install && npx playwright install chromium
 node ui-test.mjs ../../target/debug/resizer
 ```

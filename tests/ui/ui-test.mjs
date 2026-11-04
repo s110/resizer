@@ -1,7 +1,8 @@
 /**
  * Browser tests for the parts of the interface that only exist in the page:
- * the ffmpeg setup screen, the enlarged previews, and the A/B overlay
- * comparison. Run by CI (see .github/workflows/ci.yml):
+ * the ffmpeg setup screen, the enlarged previews, the A/B overlay
+ * comparison, and the convert / clear / open-output buttons. Run by CI (see
+ * .github/workflows/ci.yml):
  *
  *   node tests/ui/ui-test.mjs <path-to-resizer-binary>
  *
@@ -10,7 +11,7 @@
 
 import { chromium } from 'playwright-core';
 import { spawn, execFileSync } from 'node:child_process';
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import net from 'node:net';
@@ -211,6 +212,129 @@ async function testPreviewAndAB(browser) {
     await page.click('#closemodal');
     const leftovers = await page.$$('#abbox video');
     check('closing clears the players', leftovers.length === 0);
+
+    // Esc while the preview is still generating cancels it: the late answer
+    // must not reopen the modal. The route holds the real answer until
+    // after Esc, so the order never depends on how fast ffmpeg is.
+    let release;
+    const held = new Promise((r) => { release = r; });
+    let answered;
+    const lateAnswer = new Promise((r) => { answered = r; });
+    await page.route('**/api/preview', async (route) => {
+      const response = await route.fetch();
+      await held;
+      await route.fulfill({ response });
+      answered();
+    });
+    const asked = page.waitForRequest('**/api/preview');
+    await page.click('[data-prev]');
+    await asked;
+    await page.keyboard.press('Escape');
+    release();
+    await lateAnswer;
+    await page.waitForTimeout(300);
+    check('Esc during generation keeps the modal closed', !(await page.isVisible('#modal.open')));
+    await page.unroute('**/api/preview');
+
+    await page.click('[data-prev]');
+    const reopened = await page.waitForSelector('#modal.open', { timeout: 90000 })
+      .then(() => true, () => false);
+    check('the next preview still opens', reopened);
+  } finally {
+    await page.close();
+    srv.child.kill();
+    rmSync(srv.home, { recursive: true, force: true });
+    rmSync(mediaDir, { recursive: true, force: true });
+  }
+}
+
+/* ---------------- test 3: the action buttons ---------------- */
+// "Convertir todo", "Vaciar lista" and "abrir" reach POST-only routes. A page
+// that sends them as GET gets 404 and nothing converts, so drive the buttons
+// and judge by the files that land in the output folder.
+async function testConvertButtons(browser) {
+  console.log('convert, clear and open-output buttons');
+  const srv = await startServer({ withFfmpeg: true });
+  const mediaDir = makeMedia();
+  // A portrait photo next to the landscape clip: one batch, both kinds.
+  execFileSync('ffmpeg', [
+    '-y', '-v', 'error',
+    '-f', 'lavfi', '-i', 'testsrc2=size=900x1600:rate=1:duration=1',
+    '-frames:v', '1', join(mediaDir, 'photo.jpg'),
+  ]);
+  const outDir = join(srv.home, 'salida');
+  const page = await browser.newPage({ viewport: { width: 1400, height: 1000 } });
+  const toasts = [];
+  try {
+    await page.goto(`http://127.0.0.1:${srv.port}/`, { waitUntil: 'networkidle' });
+    await page.exposeFunction('__toast', (t) => toasts.push(t));
+    await page.evaluate(() => new MutationObserver(() => {
+      const t = document.querySelector('#toast');
+      if (t.style.display === 'block') window.__toast(t.textContent);
+    }).observe(document.querySelector('#toast'), { attributes: true, childList: true }));
+
+    await page.fill('#folderpath', mediaDir);
+    await page.click('#addfolder');
+    await page.waitForFunction(() => document.querySelectorAll('#queue .row').length === 2,
+      null, { timeout: 20000 });
+    check('the convert button is enabled with files ready', await page.isEnabled('#convert'));
+
+    await page.fill('#outdir', outDir);
+    await page.click('#convert');
+    const reached = await page.waitForFunction(
+      () => document.querySelectorAll('#queue .chip.done').length === 2,
+      null, { timeout: 120000 }).then(() => true, () => false);
+    const chips = await page.$$eval('#queue .chip', (cs) => cs.map((c) => c.textContent).join(', '));
+    check('every entry reaches "hecho" after "Convertir todo"', reached, chips);
+
+    const state = await (await fetch(`http://127.0.0.1:${srv.port}/api/state`)).json();
+    const outs = state.entries.map((e) => e.out_path || '');
+    const names = outs.map((p) => p.split(/[\\/]/).pop()).sort();
+    check('outputs land in the folder typed in the panel',
+      outs.length === 2 && outs.every((p) => p.startsWith(outDir)), outs.join(', '));
+    check('outputs carry the planned names',
+      names.join(',') === 'clip-web.mp4,photo-web.jpg', names.join(','));
+    const sizes = outs.map((p) => { try { return statSync(p).size; } catch { return 0; } });
+    check('both output files are on disk and not empty', sizes.every((n) => n > 0), sizes.join(', '));
+    check('the batch is over once both are done', state.converting === false);
+    check('the convert button is disabled with nothing left', !(await page.isEnabled('#convert')));
+
+    // "abrir" would launch the system file manager: answer it here, and
+    // only check what the page sends.
+    let openReq = null;
+    await page.route('**/api/open-output', (route) => {
+      openReq = route.request();
+      route.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true}' });
+    });
+    await page.click('#openout');
+    await page.waitForTimeout(300);
+    check('"abrir" sends a POST with the page token',
+      openReq && openReq.method() === 'POST' && !!openReq.headers()['x-resizer-token'],
+      openReq ? openReq.method() : 'no request');
+
+    await page.click('#clear');
+    const emptied = await page.waitForFunction(
+      () => document.querySelectorAll('#queue .row').length === 0,
+      null, { timeout: 10000 }).then(() => true, () => false);
+    const after = await (await fetch(`http://127.0.0.1:${srv.port}/api/state`)).json();
+    check('"Vaciar lista" empties the list', emptied && after.entries.length === 0,
+      `${after.entries.length} entries left`);
+    check('the converted files survive "Vaciar lista"',
+      outs.every((p) => existsSync(p)));
+
+    // Adding a folder skips files already in the list. After a real clear
+    // the same files come back as new entries, ready to convert again.
+    const oldIds = state.entries.map((e) => e.id);
+    await page.click('#addfolder');
+    const back = await page.waitForFunction(
+      () => [...document.querySelectorAll('#queue .chip')].filter((c) => c.textContent === 'listo').length === 2,
+      null, { timeout: 20000 }).then(() => true, () => false);
+    const again = await (await fetch(`http://127.0.0.1:${srv.port}/api/state`)).json();
+    check('the same folder can be added again after clearing',
+      back && again.entries.length === 2 && again.entries.every((e) => !oldIds.includes(e.id)),
+      `ids ${oldIds.join(',')} -> ${again.entries.map((e) => e.id).join(',')}`);
+    check('no action ended in an error toast',
+      toasts.every((t) => !/not found|error/i.test(t)), toasts.join(' | '));
   } finally {
     await page.close();
     srv.child.kill();
@@ -225,6 +349,7 @@ const browser = await chromium.launch({
 try {
   await testSetupScreen(browser);
   await testPreviewAndAB(browser);
+  await testConvertButtons(browser);
 } finally {
   await browser.close();
 }
