@@ -23,7 +23,7 @@ Verificado contra el código el 2026-08-23 (v1.0.1, commit `4b1421d`).
 | `README.md` | Documentación de usuario (en español); verificada al día con el código | `README.md` |
 | `docs/codebase/` | Esta documentación | — |
 
-No hay `CLAUDE.md` ni otros documentos de intención en el repo.
+No hay documentos de intención en el repo.
 
 ## 2) Entry Points
 
