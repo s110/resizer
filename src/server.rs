@@ -388,6 +388,17 @@ fn api_ffmpeg_install(req: &mut Request, ctx: &Arc<Ctx>) -> Response<std::io::Cu
     let Some(method) = body["method"].as_str().and_then(install::Method::from_id) else {
         return err_json(400, "No reconozco esa forma de instalación.");
     };
+    // Same rule as the CLI: only the methods this system offers.
+    if !install::options().iter().any(|o| o.id == method.id()) {
+        return err_json(
+            400,
+            "Esa forma de instalación no está disponible en este equipo.",
+        );
+    }
+    // Copying over a working ffmpeg can fail while it runs ("Text file busy").
+    if tools_of(ctx).is_some() {
+        return err_json(409, "ffmpeg ya está instalado.");
+    }
     {
         let mut setup = ctx.setup.lock().unwrap();
         if setup.installing {
@@ -406,10 +417,17 @@ fn api_ffmpeg_install(req: &mut Request, ctx: &Arc<Ctx>) -> Response<std::io::Cu
         });
         let mut setup = ctx2.setup.lock().unwrap();
         match result.and_then(|_| {
-            ffmpeg::find_tools(None).map_err(|_| {
-                "La instalación terminó pero ffmpeg sigue sin responder. \
-                 Prueba con otra forma de instalación."
-                    .to_string()
+            ffmpeg::find_tools(None).map_err(|_| match std::env::var_os("FFMPEG_PATH") {
+                // FFMPEG_PATH wins over every other place, so no install
+                // method can help until it changes.
+                Some(p) => format!(
+                    "La instalación terminó, pero FFMPEG_PATH apunta a {} y ese ffmpeg \
+                     no responde. Corrige o quita esa variable y vuelve a abrir resizer.",
+                    Path::new(&p).display()
+                ),
+                None => "La instalación terminó pero ffmpeg sigue sin responder. \
+                         Prueba con otra forma de instalación."
+                    .to_string(),
             })
         }) {
             Ok(tools) => {
