@@ -212,6 +212,34 @@ async function testPreviewAndAB(browser) {
     await page.click('#closemodal');
     const leftovers = await page.$$('#abbox video');
     check('closing clears the players', leftovers.length === 0);
+
+    // Esc while the preview is still generating cancels it: the late answer
+    // must not reopen the modal. The route holds the real answer until
+    // after Esc, so the order never depends on how fast ffmpeg is.
+    let release;
+    const held = new Promise((r) => { release = r; });
+    let answered;
+    const lateAnswer = new Promise((r) => { answered = r; });
+    await page.route('**/api/preview', async (route) => {
+      const response = await route.fetch();
+      await held;
+      await route.fulfill({ response });
+      answered();
+    });
+    const asked = page.waitForRequest('**/api/preview');
+    await page.click('[data-prev]');
+    await asked;
+    await page.keyboard.press('Escape');
+    release();
+    await lateAnswer;
+    await page.waitForTimeout(300);
+    check('Esc during generation keeps the modal closed', !(await page.isVisible('#modal.open')));
+    await page.unroute('**/api/preview');
+
+    await page.click('[data-prev]');
+    const reopened = await page.waitForSelector('#modal.open', { timeout: 90000 })
+      .then(() => true, () => false);
+    check('the next preview still opens', reopened);
   } finally {
     await page.close();
     srv.child.kill();
