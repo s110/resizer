@@ -30,8 +30,7 @@ No hay herramienta de cobertura configurada.
 - Unitarios: co-locados al final de cada módulo en `#[cfg(test)] mod tests`
   (`src/plan.rs`, `src/ffmpeg.rs`, `src/jobs.rs`, `src/install.rs`,
   `src/server.rs`).
-- Integración: `tests/e2e_shoot_batch.rs` (escenario de carpeta completa,
-  ver `CLAUDE.md`), `tests/e2e.rs` (CLI contra ffmpeg real) y
+- Integración: `tests/e2e_shoot_batch.rs` (escenario de carpeta completa), `tests/e2e.rs` (CLI contra ffmpeg real) y
   `tests/setup.rs` (GUI/CLI con ffmpeg deliberadamente inalcanzable).
 - UI: `tests/ui/ui-test.mjs` + `package.json` propio (`npm test` apunta al
   binario release).
